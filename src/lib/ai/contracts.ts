@@ -57,10 +57,12 @@ const CHAT_MESSAGE_OVERHEAD_BYTES = 64;
  * syntactically schema-valid body. The cap is instead sized to the largest
  * body a real client sends — max messages × (max content × worst-case bytes per
  * char + per-message structure) + envelope (≈ 18.4 MiB) — derived from the
- * schema limits so ordinary message content never trips it. The content-bearing
- * fields are bounded (string length) and the numeric fields are precision-bounded
- * below (`boundedProbability`/`boundedTokenBudget`), so a schema-valid request
- * cannot be inflated past this cap by a pathological number either.
+ * schema limits so ordinary message content never trips it. This is a raw-byte
+ * guard applied BEFORE JSON.parse; it does not — and cannot — track parsed-value
+ * validity, since a client may pad a number literal or whitespace to any size
+ * and those bytes vanish at parse time (e.g. 0.000…01 underflows to 0). Such an
+ * abusive payload is correctly rejected with 413 at this layer rather than being
+ * buffered and parsed.
  */
 export const MAX_CHAT_BODY_BYTES =
   MAX_CHAT_MESSAGES *
@@ -73,10 +75,10 @@ export const chatMessageSchema = z.object({
 });
 
 /*
- * Bound the numeric fields' serialized width, not just their value range. A bare
- * z.number() accepts arbitrarily long representations (e.g. 0.000…001), which a
- * client could use to inflate an otherwise-valid body past the transport cap.
- * A multiple-of step pins the precision so the field has a finite max length.
+ * Keep the numeric fields' *parsed values* well-formed (a sane precision, not an
+ * arbitrary float). This does NOT bound the raw serialized width — JSON.parse has
+ * already discarded any padding before Zod runs — that's the transport cap's job
+ * above. It just rejects nonsense like temperature: 0.123456 with a clear 400.
  */
 const boundedProbability = z
   .number()
