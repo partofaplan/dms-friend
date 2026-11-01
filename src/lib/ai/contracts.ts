@@ -19,9 +19,16 @@ export const SUPPORTED_IMAGE_TYPES = [
 /** Upper bound on base64 payload length (~15 MB of base64 ≈ 11 MB image). */
 export const MAX_IMAGE_BASE64_LENGTH = 15_000_000;
 
+/** Max messages per chat request. */
+export const MAX_CHAT_MESSAGES = 100;
+
+/** Max `content` length per chat message, in UTF-16 code units (Zod's string length). */
+export const MAX_MESSAGE_CONTENT_LENGTH = 32_000;
+
 /*
  * Request body byte caps, enforced while the body is streamed in (before JSON
  * parsing) so oversized payloads are rejected with 413 without being buffered.
+ * Each cap must admit every body its schema accepts.
  */
 
 /** Headroom for the JSON wrapper, field names, and data URL prefix. */
@@ -30,16 +37,39 @@ const BODY_ENVELOPE_BYTES = 64 * 1024;
 /** /api/ai/extract: one max-size base64 image (ASCII, 1 byte/char) plus envelope. */
 export const MAX_EXTRACT_BODY_BYTES = MAX_IMAGE_BASE64_LENGTH + BODY_ENVELOPE_BYTES;
 
-/** /api/ai/chat: text only. Fits 100 ASCII messages at the 32k-char cap. */
-export const MAX_CHAT_BODY_BYTES = 4 * 1024 * 1024;
+/*
+ * Worst-case JSON bytes per UTF-16 code unit of a string value. A code unit can
+ * always be written as a `\uXXXX` escape (6 bytes) — JSON.stringify does this
+ * for control chars and lone surrogates, and any client may do it for any char.
+ * Unescaped text is at most 3 bytes/unit (BMP, e.g. "界") or 2 (surrogate pairs:
+ * 4 bytes per 2 units), so 6 bounds every encoding.
+ */
+const MAX_JSON_BYTES_PER_CHAR = 6;
+
+/** Per-message structure: `{"role":"assistant","content":""},` is 34 bytes. */
+const CHAT_MESSAGE_OVERHEAD_BYTES = 64;
+
+/**
+ * /api/ai/chat: the largest body chatRequestSchema can accept, i.e. max messages
+ * × (max content × worst-case bytes per char + per-message structure), plus the
+ * envelope for `messages`/`temperature`/`maxTokens`. ≈ 18.4 MiB. Derived from
+ * the schema limits so the cap can never reject a schema-valid request.
+ */
+export const MAX_CHAT_BODY_BYTES =
+  MAX_CHAT_MESSAGES *
+    (MAX_MESSAGE_CONTENT_LENGTH * MAX_JSON_BYTES_PER_CHAR + CHAT_MESSAGE_OVERHEAD_BYTES) +
+  BODY_ENVELOPE_BYTES;
 
 export const chatMessageSchema = z.object({
   role: z.enum(CHAT_ROLES),
-  content: z.string().min(1, "content is required").max(32_000),
+  content: z.string().min(1, "content is required").max(MAX_MESSAGE_CONTENT_LENGTH),
 });
 
 export const chatRequestSchema = z.object({
-  messages: z.array(chatMessageSchema).min(1, "at least one message is required").max(100),
+  messages: z
+    .array(chatMessageSchema)
+    .min(1, "at least one message is required")
+    .max(MAX_CHAT_MESSAGES),
   temperature: z.number().min(0).max(2).optional(),
   maxTokens: z.number().int().min(1).max(4096).optional(),
 });

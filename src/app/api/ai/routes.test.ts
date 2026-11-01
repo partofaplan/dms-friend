@@ -1,9 +1,12 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  chatRequestSchema,
   MAX_CHAT_BODY_BYTES,
+  MAX_CHAT_MESSAGES,
   MAX_EXTRACT_BODY_BYTES,
   MAX_IMAGE_BASE64_LENGTH,
+  MAX_MESSAGE_CONTENT_LENGTH,
   type AiErrorResponseBody,
 } from "@/lib/ai/contracts";
 import { AiError } from "@/lib/ai/errors";
@@ -119,6 +122,25 @@ describe("POST /api/ai/chat", () => {
     expect(provider.chat).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["3-byte UTF-8 text", "界"],
+    ["control chars JSON-escaped to 6 bytes", "\u0001"],
+  ])("accepts a max-size schema-valid request of %s without tripping the body limit", async (_label, char) => {
+    provider.chat.mockResolvedValue({ reply: "ok" });
+    const content = char.repeat(MAX_MESSAGE_CONTENT_LENGTH);
+    const body = {
+      messages: Array.from({ length: MAX_CHAT_MESSAGES }, () => ({ role: "assistant", content })),
+      temperature: 1.5,
+      maxTokens: 4096,
+    };
+    expect(chatRequestSchema.safeParse(body).success).toBe(true);
+
+    const response = await chatPOST(post(body));
+
+    expect(response.status).toBe(200);
+    expect(provider.chat).toHaveBeenCalledTimes(1);
+  });
+
   it("returns 413 for an oversized body without calling the provider", async () => {
     const content = "x".repeat(MAX_CHAT_BODY_BYTES);
     const response = await chatPOST(post({ messages: [{ role: "user", content }] }));
@@ -232,6 +254,27 @@ describe("POST /api/ai/extract", () => {
     const response = await extractPOST(post({ imageBase64: base64, mimeType: "image/png" }));
 
     await expectPayloadTooLarge(response);
+    expect(provider.extractCharacter).not.toHaveBeenCalled();
+  });
+
+  it("returns 413 for an oversized chunked body with no Content-Length", async () => {
+    const chunk = "A".repeat(1024 * 1024);
+    const chunks = ['{"imageBase64":"'];
+    for (let i = 0; i * chunk.length <= MAX_EXTRACT_BODY_BYTES; i++) chunks.push(chunk);
+    chunks.push('","mimeType":"image/png"}');
+
+    const response = await extractPOST(postStream(chunks));
+    await expectPayloadTooLarge(response);
+    expect(provider.extractCharacter).not.toHaveBeenCalled();
+  });
+
+  it("returns 413 when Content-Length declares an oversized body", async () => {
+    const request = new Request("http://localhost/api/ai/test", {
+      method: "POST",
+      headers: { "content-type": "application/json", "content-length": String(MAX_EXTRACT_BODY_BYTES + 1) },
+      body: JSON.stringify({ imageDataUrl: "data:image/png;base64,aGVsbG8=" }),
+    });
+    await expectPayloadTooLarge(await extractPOST(request));
     expect(provider.extractCharacter).not.toHaveBeenCalled();
   });
 
