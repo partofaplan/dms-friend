@@ -6,7 +6,7 @@ import {
   within,
 } from "@testing-library/react";
 
-import type { DexieRepository } from "@/lib/db";
+import type { DexieRepository, Repository } from "@/lib/db";
 import { characterInput, createTestRepository } from "@/test-utils/repository";
 
 import { RosterScreen } from "./roster-screen";
@@ -39,6 +39,36 @@ async function seed() {
 
 function row(name: string) {
   return screen.getByRole("article", { name });
+}
+
+/**
+ * Wraps the test repository so character updates wait until released, letting
+ * tests interleave clicks while writes are in flight.
+ */
+function withDeferredUpdates(base: DexieRepository) {
+  const gates: { id: string; open: () => void }[] = [];
+  const characters: Repository["characters"] = Object.create(base.characters);
+  characters.update = async (id, changes) => {
+    await new Promise<void>((open) => gates.push({ id, open }));
+    return base.characters.update(id, changes);
+  };
+  return {
+    repo: { characters, parties: base.parties } satisfies Repository,
+    waiting: () => gates.map((gate) => gate.id),
+    release(id: string) {
+      const index = gates.findIndex((gate) => gate.id === id);
+      if (index === -1) throw new Error(`No pending update for ${id}`);
+      gates.splice(index, 1)[0].open();
+    },
+  };
+}
+
+function hpButtons(name: string) {
+  return [
+    screen.getByRole("button", { name: `Decrease HP for ${name}` }),
+    screen.getByRole("button", { name: `Increase HP for ${name}` }),
+    screen.getByRole("button", { name: `Edit ${name}` }),
+  ];
 }
 
 describe("RosterScreen", () => {
@@ -139,8 +169,9 @@ describe("RosterScreen", () => {
     });
     expect(confirm).toHaveFocus();
 
-    // Cancelling keeps the character.
+    // Cancelling keeps the character and returns focus to its Delete button.
     fireEvent.click(within(row("Brakka")).getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "Delete Brakka" })).toHaveFocus();
     expect(await repo.characters.getById(brakka.id)).toBeDefined();
 
     fireEvent.click(screen.getByRole("button", { name: "Delete Brakka" }));
@@ -155,6 +186,79 @@ describe("RosterScreen", () => {
     );
     expect(row("Ilsa")).toBeInTheDocument();
     expect(await repo.characters.getById(brakka.id)).toBeUndefined();
+    // Focus moves off the removed row to a stable control.
+    expect(screen.getByRole("button", { name: "Add character" })).toHaveFocus();
+  });
+
+  it("does not lose HP clicks when writes for different rows interleave", async () => {
+    const { brakka, ilsa } = await seed();
+    const deferred = withDeferredUpdates(repo);
+    render(<RosterScreen repo={deferred.repo} />);
+    await screen.findByRole("article", { name: "Brakka" });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Increase HP for Brakka" }),
+    );
+    await waitFor(() => expect(deferred.waiting()).toEqual([brakka.id]));
+    for (const button of hpButtons("Brakka")) expect(button).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Decrease HP for Ilsa" }),
+    ).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Decrease HP for Ilsa" }));
+    await waitFor(() =>
+      expect(deferred.waiting()).toEqual([brakka.id, ilsa.id]),
+    );
+
+    // Ilsa's write finishing must not re-enable Brakka's still-pending row.
+    deferred.release(ilsa.id);
+    await waitFor(() => expect(row("Ilsa")).toHaveTextContent("HP21 / 22"));
+    for (const button of hpButtons("Ilsa")) expect(button).toBeEnabled();
+    for (const button of hpButtons("Brakka")) expect(button).toBeDisabled();
+    expect(row("Brakka")).toHaveTextContent("HP20 / 28");
+
+    deferred.release(brakka.id);
+    await waitFor(() => expect(row("Brakka")).toHaveTextContent("HP21 / 28"));
+    for (const button of hpButtons("Brakka")) expect(button).toBeEnabled();
+
+    // A follow-up click builds on the stored value rather than a stale one.
+    fireEvent.click(
+      screen.getByRole("button", { name: "Increase HP for Brakka" }),
+    );
+    await waitFor(() => expect(deferred.waiting()).toEqual([brakka.id]));
+    deferred.release(brakka.id);
+    await waitFor(() => expect(row("Brakka")).toHaveTextContent("HP22 / 28"));
+
+    expect((await repo.characters.getById(brakka.id))?.hitPoints.current).toBe(
+      22,
+    );
+    expect((await repo.characters.getById(ilsa.id))?.hitPoints.current).toBe(
+      21,
+    );
+  });
+
+  it("blocks editing a character while its HP update is pending", async () => {
+    await seed();
+    const deferred = withDeferredUpdates(repo);
+    render(<RosterScreen repo={deferred.repo} />);
+    await screen.findByRole("article", { name: "Brakka" });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Increase HP for Brakka" }),
+    );
+    await waitFor(() => expect(deferred.waiting()).toHaveLength(1));
+
+    const edit = screen.getByRole("button", { name: "Edit Brakka" });
+    expect(edit).toBeDisabled();
+    fireEvent.click(edit);
+    expect(
+      screen.queryByRole("heading", { name: "Edit Brakka" }),
+    ).not.toBeInTheDocument();
+
+    deferred.release(deferred.waiting()[0]);
+    await waitFor(() => expect(edit).toBeEnabled());
+    fireEvent.click(edit);
+    expect(screen.getByLabelText("Current HP")).toHaveValue(21);
   });
 
   it("adjusts current HP from the row and persists it", async () => {

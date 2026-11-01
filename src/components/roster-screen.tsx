@@ -24,6 +24,11 @@ export type RosterScreenProps = {
  * The roster is always re-read from the repository after a create, edit, or
  * delete, so what's shown matches what's persisted in IndexedDB. HP nudges
  * swap in the record returned by the update instead of re-reading everything.
+ *
+ * Writes for a character are serialized through a per-id queue, and each HP
+ * nudge reads the stored record before computing the new value, so rapid or
+ * interleaved clicks apply cumulatively instead of racing on a stale render
+ * snapshot. While a character has work queued, its row controls are disabled.
  */
 export function RosterScreen({ repo = defaultRepository }: RosterScreenProps) {
   const [characters, setCharacters] = useState<Character[] | null>(null);
@@ -31,7 +36,12 @@ export function RosterScreen({ repo = defaultRepository }: RosterScreenProps) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [view, setView] = useState<View>({ kind: "list" });
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  // Number of in-flight operations per character id.
+  const [pending, setPending] = useState<ReadonlyMap<string, number>>(
+    () => new Map(),
+  );
+  const queues = useRef(new Map<string, Promise<void>>());
+  const addButtonRef = useRef<HTMLButtonElement>(null);
 
   const load = useCallback(async () => {
     try {
@@ -58,49 +68,69 @@ export function RosterScreen({ repo = defaultRepository }: RosterScreenProps) {
     };
   }, [repo]);
 
+  /** Runs `op` after any earlier operation for the same character settles. */
+  const enqueue = (id: string, op: () => Promise<void>): Promise<void> => {
+    setPending((counts) => withCount(counts, id, 1));
+    const run: Promise<void> = (queues.current.get(id) ?? Promise.resolve())
+      .then(op)
+      .catch(() => {})
+      .finally(() => {
+        if (queues.current.get(id) === run) queues.current.delete(id);
+        setPending((counts) => withCount(counts, id, -1));
+      });
+    queues.current.set(id, run);
+    return run;
+  };
+
   const handleSaved = async () => {
     setView({ kind: "list" });
     await load();
   };
 
-  const handleDelete = async (character: Character) => {
-    setBusyId(character.id);
-    setActionError(null);
-    try {
-      await repo.characters.delete(character.id);
-      setPendingDeleteId(null);
-      await load();
-    } catch (error) {
-      setActionError(errorMessage(error, `Could not delete ${character.name}.`));
-    } finally {
-      setBusyId(null);
-    }
-  };
+  const handleDelete = (character: Character) =>
+    enqueue(character.id, async () => {
+      setActionError(null);
+      try {
+        await repo.characters.delete(character.id);
+        await load();
+        setPendingDeleteId(null);
+        // The row (and its focused confirm button) is gone; land somewhere stable.
+        addButtonRef.current?.focus();
+      } catch (error) {
+        setActionError(errorMessage(error, `Could not delete ${character.name}.`));
+      }
+    });
 
-  const adjustHp = async (character: Character, delta: number) => {
-    const { hitPoints } = character;
-    const current = Math.min(
-      hitPoints.max,
-      Math.max(0, hitPoints.current + delta),
-    );
-    if (current === hitPoints.current) return;
-    setBusyId(character.id);
-    setActionError(null);
-    try {
-      const updated = await repo.characters.update(character.id, {
-        hitPoints: { ...hitPoints, current },
-      });
-      setCharacters((list) =>
-        list?.map((c) => (c.id === updated.id ? updated : c)) ?? list,
-      );
-    } catch (error) {
-      setActionError(
-        errorMessage(error, `Could not update HP for ${character.name}.`),
-      );
-    } finally {
-      setBusyId(null);
-    }
-  };
+  const adjustHp = (character: Character, delta: number) =>
+    enqueue(character.id, async () => {
+      setActionError(null);
+      try {
+        // Start from the stored value, not the (possibly stale) render snapshot.
+        const latest = await repo.characters.getById(character.id);
+        if (!latest) {
+          await load();
+          return;
+        }
+        const { hitPoints } = latest;
+        const current = Math.min(
+          hitPoints.max,
+          Math.max(0, hitPoints.current + delta),
+        );
+        const updated =
+          current === hitPoints.current
+            ? latest
+            : await repo.characters.update(character.id, {
+                hitPoints: { ...hitPoints, current },
+              });
+        setCharacters((list) =>
+          list?.map((c) => (c.id === updated.id ? updated : c)) ?? list,
+        );
+      } catch (error) {
+        setActionError(
+          errorMessage(error, `Could not update HP for ${character.name}.`),
+        );
+      }
+    });
 
   if (view.kind !== "list") {
     const editing = view.kind === "edit" ? view.character : undefined;
@@ -125,7 +155,11 @@ export function RosterScreen({ repo = defaultRepository }: RosterScreenProps) {
     <section className="roster" aria-labelledby="roster-title">
       <div className="roster__header">
         <h2 id="roster-title">Characters</h2>
-        <button type="button" onClick={() => setView({ kind: "create" })}>
+        <button
+          ref={addButtonRef}
+          type="button"
+          onClick={() => setView({ kind: "create" })}
+        >
           Add character
         </button>
       </div>
@@ -158,7 +192,7 @@ export function RosterScreen({ repo = defaultRepository }: RosterScreenProps) {
             <RosterRow
               key={character.id}
               character={character}
-              busy={busyId === character.id}
+              busy={(pending.get(character.id) ?? 0) > 0}
               confirmingDelete={pendingDeleteId === character.id}
               onEdit={() => setView({ kind: "edit", character })}
               onRequestDelete={() => setPendingDeleteId(character.id)}
@@ -198,10 +232,15 @@ function RosterRow({
     character;
   const headingId = `character-${character.id}-name`;
   const confirmRef = useRef<HTMLButtonElement>(null);
+  const deleteRef = useRef<HTMLButtonElement>(null);
+  const wasConfirming = useRef(false);
 
-  // Move focus into the confirmation so keyboard/screen-reader users land on it.
+  // Move focus into the confirmation so keyboard/screen-reader users land on
+  // it, and back to the Delete button if the confirmation is cancelled.
   useEffect(() => {
     if (confirmingDelete) confirmRef.current?.focus();
+    else if (wasConfirming.current) deleteRef.current?.focus();
+    wasConfirming.current = confirmingDelete;
   }, [confirmingDelete]);
 
   return (
@@ -272,10 +311,16 @@ function RosterRow({
           </div>
         ) : (
           <div className="roster-row__actions">
-            <button type="button" onClick={onEdit} aria-label={`Edit ${name}`}>
+            <button
+              type="button"
+              onClick={onEdit}
+              disabled={busy}
+              aria-label={`Edit ${name}`}
+            >
               Edit
             </button>
             <button
+              ref={deleteRef}
               type="button"
               onClick={onRequestDelete}
               aria-label={`Delete ${name}`}
@@ -287,6 +332,18 @@ function RosterRow({
       </article>
     </li>
   );
+}
+
+function withCount(
+  counts: ReadonlyMap<string, number>,
+  id: string,
+  delta: number,
+): ReadonlyMap<string, number> {
+  const next = new Map(counts);
+  const count = (next.get(id) ?? 0) + delta;
+  if (count > 0) next.set(id, count);
+  else next.delete(id);
+  return next;
 }
 
 function errorMessage(error: unknown, fallback: string): string {
