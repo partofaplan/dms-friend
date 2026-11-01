@@ -1,3 +1,4 @@
+import "server-only";
 import { OpenAiProvider } from "./openai-provider";
 import type { AiProvider } from "./provider";
 

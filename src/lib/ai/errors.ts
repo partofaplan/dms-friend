@@ -23,6 +23,7 @@ export function isAiError(error: unknown): error is AiError {
 /** HTTP status returned by the API routes for each error kind. */
 export const AI_ERROR_HTTP_STATUS: Record<AiErrorKind, number> = {
   bad_request: 400,
+  payload_too_large: 413,
   rate_limited: 429,
   missing_key: 500,
   provider_error: 502,
@@ -36,6 +37,7 @@ export const AI_ERROR_HTTP_STATUS: Record<AiErrorKind, number> = {
  */
 export const AI_ERROR_PUBLIC_MESSAGE: Record<AiErrorKind, string> = {
   bad_request: "The AI request was invalid.",
+  payload_too_large: "The request body is too large.",
   rate_limited: "The AI provider is rate limiting requests. Try again shortly.",
   missing_key: "The AI service is not configured on the server.",
   provider_error: "The AI provider failed to handle the request.",

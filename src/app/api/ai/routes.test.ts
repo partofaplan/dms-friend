@@ -1,6 +1,11 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AiErrorResponseBody } from "@/lib/ai/contracts";
+import {
+  MAX_CHAT_BODY_BYTES,
+  MAX_EXTRACT_BODY_BYTES,
+  MAX_IMAGE_BASE64_LENGTH,
+  type AiErrorResponseBody,
+} from "@/lib/ai/contracts";
 import { AiError } from "@/lib/ai/errors";
 import type { AiProvider } from "@/lib/ai/provider";
 import { POST as chatPOST } from "./chat/route";
@@ -24,6 +29,30 @@ function post(body: unknown, raw = false): Request {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: raw ? (body as string) : JSON.stringify(body),
+  });
+}
+
+/** A POST whose body arrives as a chunked stream with no Content-Length. */
+function postStream(chunks: string[]): Request {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
+  return new Request("http://localhost/api/ai/test", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body,
+    duplex: "half",
+  } as RequestInit);
+}
+
+async function expectPayloadTooLarge(response: Response): Promise<void> {
+  expect(response.status).toBe(413);
+  expect(await response.json()).toEqual({
+    error: { kind: "payload_too_large", message: "The request body is too large." },
   });
 }
 
@@ -87,6 +116,35 @@ describe("POST /api/ai/chat", () => {
     const response = await chatPOST(post("{not json", true));
     expect(response.status).toBe(400);
     expect(((await response.json()) as AiErrorResponseBody).error.kind).toBe("bad_request");
+    expect(provider.chat).not.toHaveBeenCalled();
+  });
+
+  it("returns 413 for an oversized body without calling the provider", async () => {
+    const content = "x".repeat(MAX_CHAT_BODY_BYTES);
+    const response = await chatPOST(post({ messages: [{ role: "user", content }] }));
+    await expectPayloadTooLarge(response);
+    expect(provider.chat).not.toHaveBeenCalled();
+  });
+
+  it("returns 413 for an oversized chunked body with no Content-Length", async () => {
+    const chunk = "x".repeat(256 * 1024);
+    const chunks = ['{"messages":[{"role":"user","content":"'];
+    for (let i = 0; i * chunk.length <= MAX_CHAT_BODY_BYTES; i++) chunks.push(chunk);
+    chunks.push('"}]}');
+
+    const response = await chatPOST(postStream(chunks));
+    await expectPayloadTooLarge(response);
+    expect(provider.chat).not.toHaveBeenCalled();
+  });
+
+  it("returns 413 when Content-Length declares an oversized body", async () => {
+    const request = new Request("http://localhost/api/ai/test", {
+      method: "POST",
+      headers: { "content-type": "application/json", "content-length": String(MAX_CHAT_BODY_BYTES + 1) },
+      body: JSON.stringify(validBody),
+    });
+    await expectPayloadTooLarge(await chatPOST(request));
+    expect(provider.chat).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -153,6 +211,32 @@ describe("POST /api/ai/extract", () => {
     ["unsupported mime type", { imageBase64: "aGVsbG8=", mimeType: "application/pdf" }],
   ])("returns 400 for %s", async (_label, body) => {
     const response = await extractPOST(post(body));
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as AiErrorResponseBody).error.kind).toBe("bad_request");
+    expect(provider.extractCharacter).not.toHaveBeenCalled();
+  });
+
+  it("accepts a max-size image without tripping the body limit", async () => {
+    provider.extractCharacter.mockResolvedValue({ data: extracted, raw: "{}" });
+    const base64 = "A".repeat(MAX_IMAGE_BASE64_LENGTH);
+
+    const response = await extractPOST(post({ imageDataUrl: `data:image/png;base64,${base64}` }));
+
+    expect(response.status).toBe(200);
+    expect(provider.extractCharacter).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns 413 for a body over the extract limit without calling the provider", async () => {
+    const base64 = "A".repeat(MAX_EXTRACT_BODY_BYTES);
+
+    const response = await extractPOST(post({ imageBase64: base64, mimeType: "image/png" }));
+
+    await expectPayloadTooLarge(response);
+    expect(provider.extractCharacter).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for malformed JSON", async () => {
+    const response = await extractPOST(post('{"imageDataUrl": ', true));
     expect(response.status).toBe(400);
     expect(((await response.json()) as AiErrorResponseBody).error.kind).toBe("bad_request");
     expect(provider.extractCharacter).not.toHaveBeenCalled();

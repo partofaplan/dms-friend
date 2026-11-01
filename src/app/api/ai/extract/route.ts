@@ -1,5 +1,9 @@
 import { getAiProvider } from "@/lib/ai";
-import { extractRequestSchema, type ExtractResponseBody } from "@/lib/ai/contracts";
+import {
+  extractRequestSchema,
+  MAX_EXTRACT_BODY_BYTES,
+  type ExtractResponseBody,
+} from "@/lib/ai/contracts";
 import { aiErrorResponse, parseJsonBody } from "@/lib/ai/http";
 
 // Server-only: reads OPENAI_API_KEY per request, never at build time.
@@ -11,7 +15,7 @@ export const dynamic = "force-dynamic";
  * Body: ExtractRequestBody → 200 ExtractResponseBody, or AiErrorResponseBody on failure.
  */
 export async function POST(request: Request): Promise<Response> {
-  const parsed = await parseJsonBody(request, extractRequestSchema);
+  const parsed = await parseJsonBody(request, extractRequestSchema, MAX_EXTRACT_BODY_BYTES);
   if (!parsed.ok) return parsed.response;
 
   try {

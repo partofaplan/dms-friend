@@ -1,5 +1,5 @@
 import { getAiProvider } from "@/lib/ai";
-import { chatRequestSchema, type ChatResponseBody } from "@/lib/ai/contracts";
+import { chatRequestSchema, MAX_CHAT_BODY_BYTES, type ChatResponseBody } from "@/lib/ai/contracts";
 import { aiErrorResponse, parseJsonBody } from "@/lib/ai/http";
 
 // Server-only: reads OPENAI_API_KEY per request, never at build time.
@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
  * Body: ChatRequestBody → 200 ChatResponseBody, or AiErrorResponseBody on failure.
  */
 export async function POST(request: Request): Promise<Response> {
-  const parsed = await parseJsonBody(request, chatRequestSchema);
+  const parsed = await parseJsonBody(request, chatRequestSchema, MAX_CHAT_BODY_BYTES);
   if (!parsed.ok) return parsed.response;
 
   try {

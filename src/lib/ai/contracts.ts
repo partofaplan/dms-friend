@@ -19,6 +19,20 @@ export const SUPPORTED_IMAGE_TYPES = [
 /** Upper bound on base64 payload length (~15 MB of base64 ≈ 11 MB image). */
 export const MAX_IMAGE_BASE64_LENGTH = 15_000_000;
 
+/*
+ * Request body byte caps, enforced while the body is streamed in (before JSON
+ * parsing) so oversized payloads are rejected with 413 without being buffered.
+ */
+
+/** Headroom for the JSON wrapper, field names, and data URL prefix. */
+const BODY_ENVELOPE_BYTES = 64 * 1024;
+
+/** /api/ai/extract: one max-size base64 image (ASCII, 1 byte/char) plus envelope. */
+export const MAX_EXTRACT_BODY_BYTES = MAX_IMAGE_BASE64_LENGTH + BODY_ENVELOPE_BYTES;
+
+/** /api/ai/chat: text only. Fits 100 ASCII messages at the 32k-char cap. */
+export const MAX_CHAT_BODY_BYTES = 4 * 1024 * 1024;
+
 export const chatMessageSchema = z.object({
   role: z.enum(CHAT_ROLES),
   content: z.string().min(1, "content is required").max(32_000),
@@ -124,6 +138,7 @@ export interface ExtractResponseBody {
 export const AI_ERROR_KINDS = [
   "missing_key",
   "bad_request",
+  "payload_too_large",
   "rate_limited",
   "timeout",
   "provider_error",
