@@ -42,4 +42,41 @@ The OpenAI key lives only in a Kubernetes Secret (and in gitignored local env fi
 
 ## Development
 
-Requirements and setup instructions will be added as the scaffold lands.
+### Requirements
+
+- Node.js 22 LTS or 24 (some lint dependencies require `^20.19 || ^22.13 || >=24`)
+- npm 10+
+
+### Setup
+
+```bash
+npm install
+cp .env.example .env.local   # then fill in OPENAI_API_KEY
+```
+
+### Commands
+
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | Start the dev server at http://localhost:3000 |
+| `npm test` | Run the Vitest suite once (`npm run test:watch` for watch mode) |
+| `npm run lint` | Lint with ESLint |
+| `npm run build` | Production build (`output: "standalone"`) |
+| `npm start` | Serve the production build |
+
+### Standalone output
+
+`npm run build` emits a self-contained server in `.next/standalone`. To run it outside `npm start` (e.g. in a container), copy the static assets alongside it first:
+
+```bash
+cp -r public .next/standalone/
+cp -r .next/static .next/standalone/.next/
+node .next/standalone/server.js
+```
+
+### PWA notes
+
+- The manifest is generated from `src/app/manifest.ts` and served at `/manifest.webmanifest`.
+- The service worker (`public/sw.js`) is registered only in production builds, so test offline/install behavior with `npm run build && npm start`, not `npm run dev`.
+- Bump `VERSION` in `public/sw.js` to invalidate all client caches.
+- Icons at `/icons/icon-192.png` and `/icons/icon-512.png` are placeholder PNGs rendered at build time by route handlers in `src/app/icons/`. To use real artwork, delete those route folders and drop PNGs at `public/icons/icon-192.png` and `public/icons/icon-512.png`.
