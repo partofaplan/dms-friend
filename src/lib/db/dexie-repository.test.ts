@@ -237,6 +237,40 @@ describe("parties", () => {
     expect((await repo.parties.getById(party.id))?.characterIds).toEqual([]);
   });
 
+  it("creates a party with existing characters in the given order", async () => {
+    const zed = await repo.characters.create(character({ name: "Zed" }));
+    const aria = await repo.characters.create(character({ name: "Aria" }));
+    const party = await repo.parties.create({
+      name: "Crew",
+      characterIds: [zed.id, aria.id],
+    });
+    expect(party.characterIds).toEqual([zed.id, aria.id]);
+    expect(await repo.parties.listCharacters(party.id)).toEqual([zed, aria]);
+  });
+
+  it("refuses to create a party referencing a missing character", async () => {
+    const c = await repo.characters.create(character());
+    const create = repo.parties.create({
+      name: "Crew",
+      characterIds: [c.id, makeId(999)],
+    });
+    await expect(create).rejects.toBeInstanceOf(RecordNotFoundError);
+    await expect(create).rejects.toThrow(makeId(999));
+    expect(await repo.parties.getAll()).toEqual([]);
+  });
+
+  it("refuses to update a party to reference a missing character", async () => {
+    const c = await repo.characters.create(character());
+    const party = await repo.parties.create({
+      name: "Crew",
+      characterIds: [c.id],
+    });
+    await expect(
+      repo.parties.update(party.id, { characterIds: [c.id, makeId(999)] }),
+    ).rejects.toBeInstanceOf(RecordNotFoundError);
+    expect(await repo.parties.getById(party.id)).toEqual(party);
+  });
+
   it("starts each test with an empty database", async () => {
     expect(await repo.characters.getAll()).toEqual([]);
     expect(await repo.parties.getAll()).toEqual([]);

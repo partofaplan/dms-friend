@@ -141,32 +141,69 @@ export class DexieRepository implements Repository {
     );
   }
 
-  private async createParty(input: PartyInput): Promise<Party> {
-    const data = validate(partyInputSchema, "party", input);
-    const timestamp = this.now();
-    const party = validate(partySchema, "party", {
-      ...data,
-      id: this.generateId(),
-      createdAt: timestamp,
-      updatedAt: timestamp,
+  /**
+   * Runs `fn` in a read/write transaction over both tables. Every party write
+   * goes through here so membership checks and the write are atomic with
+   * respect to character deletion (no dangling characterIds).
+   */
+  private partyTransaction<T>(fn: () => Promise<T>): Promise<T> {
+    return this.db.transaction(
+      "rw",
+      this.db.characters,
+      this.db.parties,
+      fn,
+    );
+  }
+
+  /** Must be called inside partyTransaction. */
+  private async assertCharactersExist(ids: readonly string[]): Promise<void> {
+    const found = await this.db.characters.bulkGet([...ids]);
+    const missing = ids.find((_, i) => found[i] === undefined);
+    if (missing !== undefined) {
+      throw new RecordNotFoundError("character", missing);
+    }
+  }
+
+  /** Must be called inside partyTransaction. */
+  private async applyPartyUpdate(
+    existing: Party,
+    changes: PartyUpdate,
+  ): Promise<Party> {
+    const updated = validate(partySchema, "party", {
+      ...existing,
+      ...changes,
+      id: existing.id,
+      createdAt: existing.createdAt,
+      updatedAt: this.now(),
     });
-    await this.db.parties.add(party);
-    return party;
+    if (changes.characterIds !== undefined) {
+      await this.assertCharactersExist(updated.characterIds);
+    }
+    await this.db.parties.put(updated);
+    return updated;
+  }
+
+  private createParty(input: PartyInput): Promise<Party> {
+    return this.partyTransaction(async () => {
+      const data = validate(partyInputSchema, "party", input);
+      const timestamp = this.now();
+      const party = validate(partySchema, "party", {
+        ...data,
+        id: this.generateId(),
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+      await this.assertCharactersExist(party.characterIds);
+      await this.db.parties.add(party);
+      return party;
+    });
   }
 
   private updateParty(id: string, changes: PartyUpdate): Promise<Party> {
-    return this.db.transaction("rw", this.db.parties, async () => {
+    return this.partyTransaction(async () => {
       const existing = await this.db.parties.get(id);
       if (!existing) throw new RecordNotFoundError("party", id);
-      const updated = validate(partySchema, "party", {
-        ...existing,
-        ...changes,
-        id: existing.id,
-        createdAt: existing.createdAt,
-        updatedAt: this.now(),
-      });
-      await this.db.parties.put(updated);
-      return updated;
+      return this.applyPartyUpdate(existing, changes);
     });
   }
 
@@ -174,33 +211,28 @@ export class DexieRepository implements Repository {
     partyId: string,
     characterId: string,
   ): Promise<Party> {
-    return this.db.transaction(
-      "rw",
-      this.db.characters,
-      this.db.parties,
-      async () => {
-        const party = await this.db.parties.get(partyId);
-        if (!party) throw new RecordNotFoundError("party", partyId);
-        if (!(await this.db.characters.get(characterId))) {
-          throw new RecordNotFoundError("character", characterId);
-        }
-        if (party.characterIds.includes(characterId)) return party;
-        return this.updateParty(partyId, {
-          characterIds: [...party.characterIds, characterId],
-        });
-      },
-    );
+    return this.partyTransaction(async () => {
+      const party = await this.db.parties.get(partyId);
+      if (!party) throw new RecordNotFoundError("party", partyId);
+      if (!(await this.db.characters.get(characterId))) {
+        throw new RecordNotFoundError("character", characterId);
+      }
+      if (party.characterIds.includes(characterId)) return party;
+      return this.applyPartyUpdate(party, {
+        characterIds: [...party.characterIds, characterId],
+      });
+    });
   }
 
   private removeCharacterFromParty(
     partyId: string,
     characterId: string,
   ): Promise<Party> {
-    return this.db.transaction("rw", this.db.parties, async () => {
+    return this.partyTransaction(async () => {
       const party = await this.db.parties.get(partyId);
       if (!party) throw new RecordNotFoundError("party", partyId);
       if (!party.characterIds.includes(characterId)) return party;
-      return this.updateParty(partyId, {
+      return this.applyPartyUpdate(party, {
         characterIds: party.characterIds.filter((id) => id !== characterId),
       });
     });
