@@ -50,10 +50,17 @@ const MAX_JSON_BYTES_PER_CHAR = 6;
 const CHAT_MESSAGE_OVERHEAD_BYTES = 64;
 
 /**
- * /api/ai/chat: the largest body chatRequestSchema can accept, i.e. max messages
- * × (max content × worst-case bytes per char + per-message structure), plus the
- * envelope for `messages`/`temperature`/`maxTokens`. ≈ 18.4 MiB. Derived from
- * the schema limits so the cap can never reject a schema-valid request.
+ * /api/ai/chat: transport-layer byte cap on the request body, enforced while
+ * streaming so oversized payloads are rejected (413) before being buffered or
+ * parsed. It is a DoS guard, NOT a restatement of schema validity: JSON numbers
+ * and whitespace have unbounded length, so no finite byte cap can admit *every*
+ * syntactically schema-valid body. The cap is instead sized to the largest
+ * body a real client sends — max messages × (max content × worst-case bytes per
+ * char + per-message structure) + envelope (≈ 18.4 MiB) — derived from the
+ * schema limits so ordinary message content never trips it. The content-bearing
+ * fields are bounded (string length) and the numeric fields are precision-bounded
+ * below (`boundedProbability`/`boundedTokenBudget`), so a schema-valid request
+ * cannot be inflated past this cap by a pathological number either.
  */
 export const MAX_CHAT_BODY_BYTES =
   MAX_CHAT_MESSAGES *
@@ -65,13 +72,27 @@ export const chatMessageSchema = z.object({
   content: z.string().min(1, "content is required").max(MAX_MESSAGE_CONTENT_LENGTH),
 });
 
+/*
+ * Bound the numeric fields' serialized width, not just their value range. A bare
+ * z.number() accepts arbitrarily long representations (e.g. 0.000…001), which a
+ * client could use to inflate an otherwise-valid body past the transport cap.
+ * A multiple-of step pins the precision so the field has a finite max length.
+ */
+const boundedProbability = z
+  .number()
+  .min(0)
+  .max(2)
+  .multipleOf(0.01, "temperature must have at most two decimal places");
+
+const boundedTokenBudget = z.number().int().min(1).max(4096);
+
 export const chatRequestSchema = z.object({
   messages: z
     .array(chatMessageSchema)
     .min(1, "at least one message is required")
     .max(MAX_CHAT_MESSAGES),
-  temperature: z.number().min(0).max(2).optional(),
-  maxTokens: z.number().int().min(1).max(4096).optional(),
+  temperature: boundedProbability.optional(),
+  maxTokens: boundedTokenBudget.optional(),
 });
 
 const imageMimeTypeSchema = z.enum(SUPPORTED_IMAGE_TYPES);

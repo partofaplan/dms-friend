@@ -105,6 +105,7 @@ describe("POST /api/ai/chat", () => {
     ["bad role", { messages: [{ role: "tool", content: "x" }] }],
     ["empty content", { messages: [{ role: "user", content: "" }] }],
     ["temperature out of range", { ...validBody, temperature: 5 }],
+    ["temperature with excess precision", { ...validBody, temperature: 0.123456 }],
     ["not an object", ["hello"]],
   ])("returns 400 for %s", async (_label, body) => {
     const response = await chatPOST(post(body));
@@ -139,6 +140,30 @@ describe("POST /api/ai/chat", () => {
 
     expect(response.status).toBe(200);
     expect(provider.chat).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a body inflated by an unbounded number at the transport layer, pre-parse", async () => {
+    // JSON numbers have unbounded textual length, so a client can pad a number
+    // literal to any size. Those bytes live in the raw body and are discarded by
+    // JSON.parse (0.000…01 underflows to 0), so NO schema rule on the parsed
+    // value can bound them. That's by design: the byte cap is a transport DoS
+    // guard applied BEFORE parsing, and rejecting such an abusive payload with
+    // 413 is the correct outcome. This documents that layering.
+    const raw =
+      '{"messages":[{"role":"user","content":"x"}],"temperature":0.' +
+      "0".repeat(MAX_CHAT_BODY_BYTES) +
+      "1}";
+    const response = await chatPOST(post(raw, true));
+    await expectPayloadTooLarge(response);
+    expect(provider.chat).not.toHaveBeenCalled();
+  });
+
+  it("rejects an excess-precision temperature value at the schema layer", async () => {
+    // The precision bound keeps normal-sized numbers well-formed; a value with
+    // too many decimals is a 400, independent of the transport cap above.
+    expect(chatRequestSchema.safeParse({ ...validBody, temperature: 0.123456 }).success).toBe(
+      false,
+    );
   });
 
   it("returns 413 for an oversized body without calling the provider", async () => {
