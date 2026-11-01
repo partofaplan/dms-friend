@@ -74,6 +74,17 @@ cp -r .next/static .next/standalone/.next/
 node .next/standalone/server.js
 ```
 
+### AI endpoints
+
+The OpenAI key is read only on the server, per request, from `OPENAI_API_KEY` (optionally `OPENAI_MODEL`, default `gpt-4o`). It is never sent to the client, and the app builds without it. Routes call a provider-agnostic `AiProvider` (`src/lib/ai/provider.ts`). Request/response types live in `src/lib/ai/contracts.ts`, which is safe to import from client code.
+
+| Endpoint | Request body | 200 response |
+| --- | --- | --- |
+| `POST /api/ai/chat` | `{ messages: [{ role: "system" \| "user" \| "assistant", content }], temperature?, maxTokens? }` | `{ reply, usage? }` |
+| `POST /api/ai/extract` | `{ imageDataUrl: "data:image/png;base64,..." }` or `{ imageBase64, mimeType }` (png/jpeg/webp/gif) | `{ data, raw, usage? }` (`data` follows the Character shape but is not yet validated) |
+
+Errors return `{ error: { kind, message, issues? } }` with these statuses: `bad_request` 400, `rate_limited` 429, `missing_key` 500, `provider_error`/`invalid_response` 502, `timeout` 504. Messages are fixed strings, so upstream details never reach the client.
+
 ### PWA notes
 
 - The manifest is generated from `src/app/manifest.ts` and served at `/manifest.webmanifest`.
