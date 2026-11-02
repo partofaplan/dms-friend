@@ -1,0 +1,92 @@
+# Default values for dm-friend.
+
+replicaCount: 1
+
+image:
+  # Built locally with `docker build -t dm-friend:local .` and loaded into the
+  # cluster with `k3d image import dm-friend:local -c <cluster>`.
+  repository: dm-friend
+  tag: local
+  # IfNotPresent: the image is imported into the nodes, so no registry pull is needed.
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Port the Next.js server listens on inside the container.
+containerPort: 3000
+
+openai:
+  # Name of a pre-existing Secret holding OPENAI_API_KEY (recommended for production).
+  # When set, the chart does NOT template a Secret and the Deployment reads from this one:
+  #   kubectl create secret generic dm-friend-openai --from-literal=OPENAI_API_KEY=sk-...
+  existingSecret: ""
+  # Key inside the Secret that holds the API key.
+  apiKeySecretKey: OPENAI_API_KEY
+  # Convenience only: if existingSecret is empty, the chart templates a Secret with this value.
+  # Leave EMPTY in git. Supply it at install time instead, e.g.
+  #   helm install ... --set openai.apiKey="$OPENAI_API_KEY"
+  # An empty key still lets the app run; only the AI features return an error.
+  apiKey: ""
+  # Optional model override (the app defaults to gpt-4o). Set as a plain env var.
+  model: ""
+
+service:
+  type: ClusterIP
+  # Service port 80 -> container port 3000, exposed under the port name "http".
+  port: 80
+
+ingress:
+  enabled: true
+  # Tailscale operator ingress class (Hercules k3d cluster convention).
+  className: tailscale
+  # Short MagicDNS name. The operator appends the tailnet, so the app is served at
+  # https://<host>.<tailnet>.ts.net. Do not use the full FQDN here.
+  host: dmfriend
+  # Keep the app tailnet-only (no public Funnel) by default.
+  funnel: false
+  # Extra annotations merged onto the Ingress.
+  annotations: {}
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+probes:
+  # "/" is a static page that returns 200 without OPENAI_API_KEY, so it is a safe health target.
+  path: /
+  readiness:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  liveness:
+    initialDelaySeconds: 15
+    periodSeconds: 20
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+podSecurityContext:
+  runAsNonRoot: true
+  # Matches the image's unprivileged "node" user.
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

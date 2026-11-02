@@ -74,6 +74,32 @@ cp -r .next/static .next/standalone/.next/
 node .next/standalone/server.js
 ```
 
+### Container image
+
+The multi-stage `Dockerfile` (deps → build → runner) does this for you. It produces a `node:22-alpine` image that runs as a non-root user and contains only the standalone server, `.next/static`, and `public/`. The build does not need `OPENAI_API_KEY`, and `.dockerignore` keeps every `.env*` file out of the build context.
+
+```bash
+docker build -t dm-friend:local .
+docker run --rm -p 3000:3000 dm-friend:local                              # app works; AI features return missing_key
+docker run --rm -p 3000:3000 -e OPENAI_API_KEY=sk-... dm-friend:local     # with AI
+```
+
+### Kubernetes (Helm)
+
+The chart lives in `deploy/helm/dm-friend`. It deploys one replica, a ClusterIP Service (port 80 → 3000, port name `http`), and a Tailscale operator Ingress (`ingressClassName: tailscale`, `tailscale.com/funnel: "false"`, `tls.hosts: [dmfriend]`). The app is served at `https://dmfriend.<tailnet>.ts.net`. Readiness and liveness probes hit `GET /`.
+
+```bash
+helm lint deploy/helm/dm-friend
+helm template dm-friend deploy/helm/dm-friend
+
+# k3d: import the local image (pullPolicy IfNotPresent), then install
+k3d image import dm-friend:local -c <cluster>
+kubectl create secret generic dm-friend-openai --from-literal=OPENAI_API_KEY=sk-...
+helm upgrade --install dm-friend deploy/helm/dm-friend --set openai.existingSecret=dm-friend-openai
+```
+
+For the OpenAI key, use `openai.existingSecret` to point at a Secret you created out of band, which is recommended. Otherwise the chart templates its own Secret from `openai.apiKey`. That value is empty by default, so pass it with `--set openai.apiKey=...` at install time and never commit it. Set `ingress.host`, `ingress.className`, `ingress.funnel`, and `ingress.annotations` in `values.yaml`.
+
 ### AI endpoints
 
 The OpenAI key is read only on the server, per request, from `OPENAI_API_KEY` (optionally `OPENAI_MODEL`, default `gpt-4o`). It is never sent to the client, and the app builds without it. Routes call a provider-agnostic `AiProvider` (`src/lib/ai/provider.ts`). Request/response types live in `src/lib/ai/contracts.ts`, which is safe to import from client code.

@@ -1,0 +1,25 @@
+{{- if .Values.ingress.enabled }}
+# Tailscale operator ingress: tls.hosts takes the SHORT name; the operator appends the
+# tailnet and serves it at https://<host>.<tailnet>.ts.net via MagicDNS.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "dm-friend.fullname" . }}
+  labels:
+    {{- include "dm-friend.labels" . | nindent 4 }}
+  annotations:
+    tailscale.com/funnel: {{ .Values.ingress.funnel | toString | quote }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  defaultBackend:
+    service:
+      name: {{ include "dm-friend.fullname" . }}
+      port:
+        name: http
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+{{- end }}
