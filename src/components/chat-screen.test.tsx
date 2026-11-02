@@ -148,7 +148,7 @@ describe("ChatScreen", () => {
 
       const { messages } = sentBody();
       expect(messages[0].content).toContain(
-        "Referenced now (who the DM's latest message tags):\n- (party) Thorin — Dwarf Fighter 5; AC 18; HP 9/44; conditions: prone",
+        "Referenced now (who the DM's latest message tags):\n- @Thorin (party): Thorin — Dwarf Fighter 5; AC 18; HP 9/44; conditions: prone",
       );
       expect(messages[0].content).toContain("Monsters in combat (2):");
       // The question stays readable, as typed.
@@ -180,9 +180,9 @@ describe("ChatScreen", () => {
       fireEvent.click(sendButton());
       const system = sentBody().messages[0].content;
       expect(system).toContain(
-        "Referenced now (who the DM's latest message tags):\n- (combat) Goblin 2 (Goblin, CR 1/4) — AC 15; HP 3/7; conditions: poisoned",
+        "Referenced now (who the DM's latest message tags):\n- @Goblin 2 (combat): Goblin 2 (Goblin, CR 1/4) — AC 15; HP 3/7; conditions: poisoned",
       );
-      expect(system).not.toMatch(/^- \(combat\) Goblin \(CR/m);
+      expect(system).not.toMatch(/^- @Goblin \(combat\)/m);
     });
 
     it("disambiguates same-named combatants by the pick", async () => {

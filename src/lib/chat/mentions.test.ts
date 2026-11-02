@@ -202,6 +202,34 @@ describe("pinMentions", () => {
     expect(pinMentions("is @Warden down?", [{ id: gone.id, token: "Warden" }], list)).toEqual([]);
   });
 
+  it("drops a duplicate's removed pick rather than falling back to the shorter token", () => {
+    const first = combatant();
+    const second = combatant();
+    const pick: ChosenMention = { id: second.id, token: buildMentionables([], [first, second])[1].token };
+    expect(pick.token).toBe("Goblin (2)");
+    const remaining = buildMentionables([], [first]);
+    expect(pinMentions("hit @Goblin (2)", [pick], remaining)).toEqual([]);
+    expect(untagMention("hit @Goblin (2)", first.id, [pick], remaining)).toBe("hit @Goblin (2)");
+    // A separate hand-typed "@Goblin" still tags the first goblin.
+    expect(pinMentions("@Goblin (2) and @Goblin", [pick], remaining).map((p) => p.id)).toEqual([first.id]);
+  });
+
+  it("drops a removed pick even when another entity has inherited its token", () => {
+    const first = combatant();
+    const second = combatant();
+    const third = combatant();
+    const pick: ChosenMention = { id: second.id, token: buildMentionables([], [first, second, third])[1].token };
+    expect(pick.token).toBe("Goblin (2)");
+    const renumbered = buildMentionables([], [first, third]);
+    expect(renumbered[1]).toMatchObject({ id: third.id, token: "Goblin (2)" });
+    expect(pinMentions("hit @Goblin (2)", [pick], renumbered)).toEqual([]);
+    // Without the pick, a hand-typed "@Goblin (2)" tags whoever holds it now.
+    expect(pinMentions("hit @Goblin (2)", [], renumbered).map((p) => p.id)).toEqual([third.id]);
+    // Re-picking the inheritor makes that the latest pick for the token.
+    const repick: ChosenMention = { id: third.id, token: "Goblin (2)" };
+    expect(pinMentions("hit @Goblin (2)", [pick, repick], renumbered).map((p) => p.id)).toEqual([third.id]);
+  });
+
   it("pins each entity once and at most MAX_PINNED_MENTIONS", () => {
     const party = Array.from({ length: 10 }, (_, i) => character({ name: `Hero${i}` }));
     const list = buildMentionables(party, []);

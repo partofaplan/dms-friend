@@ -16,7 +16,8 @@ import { describeCharacter } from "./describe";
  * draft. On send, every "@" in the text is matched against the picked tokens
  * (authoritative: they hold the id the DM chose, even if the stable has since
  * renumbered) and then the current tokens, longest match first. A tag whose
- * text was edited away, or whose entity is gone, pins nothing.
+ * text was edited away, or whose picked entity is gone, pins nothing — it is
+ * never re-matched to another entity.
  */
 
 /** Suggestions shown in the autocomplete. */
@@ -57,7 +58,10 @@ export interface PinnedReference {
   kind: MentionKind;
   id: string;
   name: string;
-  /** The entity's current mention token (distinguishes same-named entities). */
+  /**
+   * The token the message tagged it by — the picked token, kept even if the
+   * stable has since renumbered — so same-named pins stay distinguishable.
+   */
   token: string;
   summary: string;
 }
@@ -197,39 +201,51 @@ export function insertMention(
   };
 }
 
-type Candidate = { folded: string; target: Mentionable };
+/** A token a tag can match; `target` is undefined for a tombstoned pick. */
+type Candidate = { token: string; folded: string; target: Mentionable | undefined };
 
-/** Picked tokens (for entities that still exist), then current ones; longest first. */
+/**
+ * Picked tokens, then current ones; longest first. A pick is authoritative
+ * for its token: if its entity no longer exists it stays as a tombstone (no
+ * target), so a tag of that token pins nothing rather than falling back to a
+ * shorter token ("Goblin" for a deleted "Goblin (2)") or to whichever entity
+ * the stable has since given that token. When several picks share a token,
+ * the latest wins.
+ */
 function tagCandidates(chosen: readonly ChosenMention[], mentionables: readonly Mentionable[]): Candidate[] {
   const byId = new Map(mentionables.map((m) => [m.id, m]));
+  const picked = new Set<string>();
+  const picks = [...chosen].reverse().filter((pick) => {
+    const folded = pick.token.toLowerCase();
+    if (picked.has(folded)) return false;
+    picked.add(folded);
+    return true;
+  });
   return [
-    ...chosen.flatMap((pick) => {
-      const target = byId.get(pick.id);
-      return target ? [{ token: pick.token, target }] : [];
-    }),
+    ...picks.map((pick) => ({ token: pick.token, target: byId.get(pick.id) })),
     ...mentionables.map((m) => ({ token: m.token, target: m })),
   ]
-    .map((candidate, order) => ({ folded: candidate.token.toLowerCase(), target: candidate.target, order }))
+    .map((candidate, order) => ({ ...candidate, folded: candidate.token.toLowerCase(), order }))
     .filter((candidate) => candidate.folded.length > 0)
     .sort((a, b) => b.folded.length - a.folded.length || a.order - b.order);
 }
 
-/** The entity the "@" at `at` tags, or undefined. */
-function tagAt(text: string, at: number, candidates: readonly Candidate[]): Mentionable | undefined {
+/** The candidate the "@" at `at` matches (possibly a tombstone), or undefined. */
+function tagAt(text: string, at: number, candidates: readonly Candidate[]): Candidate | undefined {
   if (text[at] !== "@" || isWordChar(text[at - 1])) return undefined;
   return candidates.find(
     ({ folded }) =>
       text.slice(at + 1, at + 1 + folded.length).toLowerCase() === folded &&
       !isWordChar(text[at + 1 + folded.length]),
-  )?.target;
+  );
 }
 
 /**
  * The entities `text` tags, in the order first tagged, at most
- * MAX_PINNED_MENTIONS. At each "@", the longest token that matches (case-
- * insensitively, ending at a word boundary) wins; a picked token beats a
- * current one of the same length. Picks whose entity no longer exists, and
- * tags matching no token, are dropped.
+ * MAX_PINNED_MENTIONS, each with the token it was tagged by. At each "@", the
+ * longest token that matches (case-insensitively, ending at a word boundary)
+ * wins; a picked token beats a current one of the same length. A tag of a
+ * pick whose entity no longer exists, and a tag matching no token, pin nothing.
  */
 export function pinMentions(
   text: string,
@@ -240,11 +256,11 @@ export function pinMentions(
   const pinned: PinnedReference[] = [];
   const seen = new Set<string>();
   for (let i = text.indexOf("@"); i >= 0 && pinned.length < MAX_PINNED_MENTIONS; i = text.indexOf("@", i + 1)) {
-    const target = tagAt(text, i, candidates);
-    if (!target || seen.has(target.id)) continue;
-    seen.add(target.id);
-    const { kind, id, name, token, summary } = target;
-    pinned.push({ kind, id, name, token, summary });
+    const match = tagAt(text, i, candidates);
+    if (!match?.target || seen.has(match.target.id)) continue;
+    seen.add(match.target.id);
+    const { kind, id, name, summary } = match.target;
+    pinned.push({ kind, id, name, token: match.token, summary });
   }
   return pinned;
 }
@@ -259,7 +275,7 @@ export function untagMention(
   const candidates = tagCandidates(chosen, mentionables);
   let result = text;
   for (let i = result.indexOf("@"); i >= 0; i = result.indexOf("@", i)) {
-    if (tagAt(result, i, candidates)?.id === id) {
+    if (tagAt(result, i, candidates)?.target?.id === id) {
       result = `${result.slice(0, i)}${result.slice(i + 1)}`;
     } else {
       i++;

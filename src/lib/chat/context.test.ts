@@ -179,13 +179,42 @@ describe("buildSystemContext with combat and references", () => {
     expect(context).toContain(
       [
         "Referenced now (who the DM's latest message tags):",
-        "- (party) Thorin (Thorin Oakenshield) — Dwarf Fighter 5; AC 18; HP 9/44",
-        "- (combat) Goblin 2 (Goblin, CR 1/4) — AC 15; HP 3/7",
+        "- @Thorin Oakenshield (party): Thorin (Thorin Oakenshield) — Dwarf Fighter 5; AC 18; HP 9/44",
+        "- @Goblin 2 (combat): Goblin 2 (Goblin, CR 1/4) — AC 15; HP 3/7",
       ].join("\n"),
     );
     expect(context).toContain('"@Name" in a message is such a tag');
     expect(context.indexOf("Referenced now")).toBeLessThan(context.indexOf("Party (1):"));
     expect(buildSystemContext({ party })).not.toContain("Referenced now (");
+  });
+
+  it("labels same-named pins with the tag the DM used, kept across a renumber", () => {
+    const first = combatant({ hitPoints: { max: 7, current: 7 } });
+    const second = combatant({ hitPoints: { max: 7, current: 2 } });
+    const before = buildMentionables([], [first, second]);
+    const picks = [
+      { id: second.id, token: before[1].token },
+      { id: first.id, token: before[0].token },
+    ];
+    expect(picks.map((pick) => pick.token)).toEqual(["Goblin (2)", "Goblin"]);
+    const text = "Does @Goblin (2) outlast @Goblin?";
+    const expected = [
+      "Referenced now (who the DM's latest message tags):",
+      "- @Goblin (2) (combat): Goblin (CR 1/4) — AC 15; HP 2/7",
+      "- @Goblin (combat): Goblin (CR 1/4) — AC 15; HP 7/7",
+    ].join("\n");
+    expect(
+      buildSystemContext({ party: [], combatants: [first, second], references: pinMentions(text, picks, before) }),
+    ).toContain(expected);
+
+    // A goblin added ahead would now own "Goblin (2)"; the picked label stays.
+    const stable = [first, combatant(), second];
+    const references = pinMentions(text, picks, buildMentionables([], stable));
+    expect(references.map((ref) => [ref.id, ref.token])).toEqual([
+      [second.id, "Goblin (2)"],
+      [first.id, "Goblin"],
+    ]);
+    expect(buildSystemContext({ party: [], combatants: stable, references })).toContain(expected);
   });
 
   it("references nothing unless told: untagged names in prose aren't pinned", () => {
@@ -227,7 +256,7 @@ describe("buildSystemContext with combat and references", () => {
     expect(context.length).toBeLessThanOrEqual(MAX_SYSTEM_CONTEXT_LENGTH);
     // The far-down member being asked about is pinned even though the party list cuts off.
     expect(context).toContain("Referenced now (");
-    expect(context).toMatch(/^- \(party\) Hero39 \(Hero39 N+…\) — /m);
+    expect(context).toMatch(/^- @Hero39 N+ \(party\): Hero39 \(Hero39 N+…\) — /m);
     expect(context.match(/Hero39 \(/g)).toHaveLength(1);
     expect(context).toContain("Party (40):");
     expect(context).toContain("Monsters in combat (100):");
