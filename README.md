@@ -109,7 +109,7 @@ helm upgrade --install dm-friend deploy/helm/dm-friend -n dm-friend \
 
 For the OpenAI key, use `openai.existingSecret` to point at a Secret you created out of band (recommended — the key stays out of Helm values and git). Otherwise the chart templates its own Secret from `openai.apiKey`, which is empty by default, so pass it with `--set openai.apiKey=...` at install time and never commit it. Set `ingress.host`, `ingress.className`, `ingress.funnel`, and `ingress.annotations` in `values.yaml`.
 
-The Tailscale operator assigns the MagicDNS hostname from the ingress name; find it with:
+The Tailscale operator derives the MagicDNS hostname from the ingress's `spec.tls.hosts` short name (`ingress.host`, default `dmfriend`) — not the ingress resource name. Read the assigned address with:
 
 ```bash
 kubectl get ingress dm-friend -n dm-friend \
