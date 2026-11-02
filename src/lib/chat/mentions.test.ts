@@ -22,7 +22,11 @@ import {
   type ChosenMention,
 } from "./mentions";
 
-const stamps = { createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" };
+const stamps = {
+  partyProfileId: "00000000-0000-4000-8000-000000000001",
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z",
+};
 
 function character(overrides: Partial<CharacterInput> = {}): Character {
   return characterSchema.parse({ ...characterInput(overrides), id: crypto.randomUUID(), ...stamps });

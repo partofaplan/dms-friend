@@ -23,10 +23,13 @@ import {
 } from "./context";
 import { buildMentionables, MAX_PINNED_MENTIONS, pinMentions } from "./mentions";
 
+const PARTY_PROFILE_ID = "00000000-0000-4000-8000-000000000001";
+
 function character(overrides: Partial<CharacterInput> = {}): Character {
   return characterSchema.parse({
     ...characterInput(overrides),
     id: crypto.randomUUID(),
+    partyProfileId: PARTY_PROFILE_ID,
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
   });
@@ -136,6 +139,7 @@ describe("buildSystemContext with combat and references", () => {
       hitPoints: { max: 7, current: 7 },
       ...overrides,
       id: crypto.randomUUID(),
+      partyProfileId: PARTY_PROFILE_ID,
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",
     });

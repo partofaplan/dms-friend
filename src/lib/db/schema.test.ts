@@ -7,14 +7,21 @@ import {
   combatantInputSchema,
   combatantName,
   combatantSchema,
+  chatMessageInputSchema,
+  chatMessageRecordSchema,
   partyInputSchema,
+  partyProfileInputSchema,
+  partyProfileSchema,
   partySchema,
+  userProfileInputSchema,
+  userProfileSchema,
   type CharacterInput,
   type CombatantInput,
 } from "./schema";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 const ID = "4f9c2b1e-8a3d-4c6e-9b2a-1d5e7f8a9b0c";
+const PARTY_ID = "0b6f3c2d-1e4a-4b5c-8d9e-0f1a2b3c4d5e";
 
 function validInput(): CharacterInput {
   return {
@@ -46,6 +53,7 @@ describe("character schema", () => {
     const stored = characterSchema.parse({
       ...validInput(),
       id: ID,
+      partyProfileId: PARTY_ID,
       createdAt: NOW,
       updatedAt: NOW,
     });
@@ -114,7 +122,14 @@ describe("character schema", () => {
   });
 
   it("rejects a stored character with a non-uuid id or bad timestamp", () => {
-    const base = { ...validInput(), id: ID, createdAt: NOW, updatedAt: NOW };
+    const base = {
+      ...validInput(),
+      id: ID,
+      partyProfileId: PARTY_ID,
+      createdAt: NOW,
+      updatedAt: NOW,
+    };
+    expect(characterSchema.safeParse(base).success).toBe(true);
     expect(characterSchema.safeParse({ ...base, id: "abc" }).success).toBe(false);
     expect(
       characterSchema.safeParse({ ...base, updatedAt: "yesterday" }).success,
@@ -173,6 +188,7 @@ describe("combatant schema", () => {
     const stored = combatantSchema.parse({
       ...validCombatant(),
       id: ID,
+      partyProfileId: PARTY_ID,
       createdAt: NOW,
       updatedAt: NOW,
     });
@@ -194,5 +210,97 @@ describe("combatant schema", () => {
     ["a missing monster", (c) => ({ ...c, monster: undefined })],
   ])("rejects %s", (_label, mutate) => {
     expect(combatantInputSchema.safeParse(mutate(validCombatant())).success).toBe(false);
+  });
+
+  it("requires a uuid party profile on a stored combatant", () => {
+    const base = { ...validCombatant(), id: ID, createdAt: NOW, updatedAt: NOW };
+    expect(combatantSchema.safeParse(base).success).toBe(false);
+    expect(
+      combatantSchema.safeParse({ ...base, partyProfileId: "nope" }).success,
+    ).toBe(false);
+  });
+});
+
+describe("character party scope", () => {
+  it("keeps partyProfileId out of the input schema and requires it when stored", () => {
+    expect(
+      characterInputSchema.parse({ ...validInput(), partyProfileId: PARTY_ID }),
+    ).not.toHaveProperty("partyProfileId");
+    const base = { ...validInput(), id: ID, createdAt: NOW, updatedAt: NOW };
+    expect(characterSchema.safeParse(base).success).toBe(false);
+  });
+});
+
+describe("profile schemas", () => {
+  it("trims user and party profile names", () => {
+    expect(userProfileInputSchema.parse({ name: "  Zach  " })).toEqual({
+      name: "Zach",
+    });
+    expect(
+      partyProfileInputSchema.parse({ userId: ID, name: " Curse of Strahd " }),
+    ).toEqual({ userId: ID, name: "Curse of Strahd" });
+  });
+
+  it.each([
+    ["blank user name", () => userProfileInputSchema.safeParse({ name: "   " })],
+    [
+      "blank party name",
+      () => partyProfileInputSchema.safeParse({ userId: ID, name: "" }),
+    ],
+    [
+      "non-uuid owner",
+      () => partyProfileInputSchema.safeParse({ userId: "me", name: "P" }),
+    ],
+    [
+      "stored user without id",
+      () =>
+        userProfileSchema.safeParse({ name: "Z", createdAt: NOW, updatedAt: NOW }),
+    ],
+    [
+      "stored party with a bad timestamp",
+      () =>
+        partyProfileSchema.safeParse({
+          id: ID,
+          userId: ID,
+          name: "P",
+          createdAt: "today",
+          updatedAt: NOW,
+        }),
+    ],
+  ])("rejects a %s", (_label, parse) => {
+    expect(parse().success).toBe(false);
+  });
+});
+
+describe("chat message schema", () => {
+  it("accepts a stored turn and keeps content verbatim", () => {
+    const stored = chatMessageRecordSchema.parse({
+      role: "assistant",
+      content: "  **Roll** a d20  ",
+      id: ID,
+      partyProfileId: PARTY_ID,
+      sequence: 0,
+      createdAt: NOW,
+    });
+    expect(stored.content).toBe("  **Roll** a d20  ");
+  });
+
+  it.each([
+    ["an unknown role", { role: "system", content: "x" }],
+    ["empty content", { role: "user", content: "" }],
+  ])("rejects %s", (_label, input) => {
+    expect(chatMessageInputSchema.safeParse(input).success).toBe(false);
+  });
+
+  it("rejects a negative or fractional sequence", () => {
+    const base = {
+      role: "user",
+      content: "hi",
+      id: ID,
+      partyProfileId: PARTY_ID,
+      createdAt: NOW,
+    };
+    expect(chatMessageRecordSchema.safeParse({ ...base, sequence: -1 }).success).toBe(false);
+    expect(chatMessageRecordSchema.safeParse({ ...base, sequence: 1.5 }).success).toBe(false);
   });
 });

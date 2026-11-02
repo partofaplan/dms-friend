@@ -5,13 +5,18 @@ import type {
   Character,
   CharacterInput,
   CharacterUpdate,
+  ChatMessageInput,
+  ChatMessageRecord,
   Combatant,
   CombatantInput,
   CombatantUpdate,
   Party,
   PartyInput,
+  PartyProfile,
   PartyUpdate,
+  UserProfile,
 } from "./schema";
+import type { UserProfileExport } from "./transfer";
 
 /*
  * Storage-agnostic repository contract. The app talks only to this interface,
@@ -72,10 +77,104 @@ export interface CombatantRepository {
   delete(id: string): Promise<void>;
 }
 
+/** A party profile's chat history, oldest first. */
+export interface ChatHistoryRepository {
+  /** Appends a turn at the end of the conversation; throws RecordNotFoundError if the party profile is missing. */
+  append(message: ChatMessageInput): Promise<ChatMessageRecord>;
+  /** Every turn in conversation order. */
+  list(): Promise<ChatMessageRecord[]>;
+  /** Deletes the whole conversation. */
+  clear(): Promise<void>;
+}
+
+/**
+ * Everything that belongs to one party profile. Reads only ever see the
+ * party's own records (another party's id reads as missing); creates stamp
+ * the party's id and throw RecordNotFoundError if the party profile does not
+ * exist, so nothing can be orphaned.
+ */
+export interface PartyScopedRepository {
+  readonly partyProfileId: string;
+  characters: CharacterRepository;
+  /** Auto-numbering ("Goblin 2") counts only this party's stable. */
+  combatants: CombatantRepository;
+  chat: ChatHistoryRepository;
+}
+
+export interface UserProfileRepository {
+  create(name: string): Promise<UserProfile>;
+  getById(id: string): Promise<UserProfile | undefined>;
+  /** Every user profile, sorted by name. */
+  getAll(): Promise<UserProfile[]>;
+  /** Throws ValidationError for a blank name, RecordNotFoundError if missing. */
+  rename(id: string, name: string): Promise<UserProfile>;
+  /**
+   * Deletes the user with all of its party profiles and their characters,
+   * combatants and chat, atomically. No-op if missing. Throws
+   * LastUserProfileError instead of deleting the only remaining user.
+   */
+  delete(id: string): Promise<void>;
+}
+
+export interface PartyProfileRepository {
+  /** Throws RecordNotFoundError if the user profile is missing. */
+  create(userId: string, name: string): Promise<PartyProfile>;
+  getById(id: string): Promise<PartyProfile | undefined>;
+  /** The user's party profiles, sorted by name. */
+  listByUser(userId: string): Promise<PartyProfile[]>;
+  /** Throws ValidationError for a blank name, RecordNotFoundError if missing. */
+  rename(id: string, name: string): Promise<PartyProfile>;
+  /**
+   * Deletes the party profile with its characters, combatants and chat,
+   * atomically. No-op if missing. A user may be left with no parties; picking
+   * another active party is the caller's job (see ensureDefaultProfile).
+   */
+  delete(id: string): Promise<void>;
+}
+
+export interface DefaultProfile {
+  user: UserProfile;
+  partyProfile: PartyProfile;
+}
+
+/**
+ * The pre-profiles, unscoped view. `characters` and `combatants` here act on
+ * the *default* party profile (see AppRepository.ensureDefaultProfile), so
+ * screens that predate profiles keep working unchanged.
+ *
+ * @deprecated Use AppRepository.forParty(partyProfileId); this shape goes away
+ * once the screens are scoped to the active party.
+ */
 export interface Repository {
   characters: CharacterRepository;
+  /** Legacy named lists of characters, superseded by party profiles. */
   parties: PartyRepository;
   combatants: CombatantRepository;
+}
+
+/**
+ * The full storage API: user/party profiles, party-scoped data, and profile
+ * export/import. Extends the legacy Repository only for back-compat.
+ */
+export interface AppRepository extends Repository {
+  users: UserProfileRepository;
+  partyProfiles: PartyProfileRepository;
+  /** The characters, monster stable and chat history of one party profile. */
+  forParty(partyProfileId: string): PartyScopedRepository;
+  /**
+   * The oldest user profile and its oldest party profile, creating
+   * "Default User" / "Default Party" when they don't exist yet (a fresh
+   * install, or a user whose last party was deleted). Idempotent.
+   */
+  ensureDefaultProfile(): Promise<DefaultProfile>;
+  /** A self-contained snapshot of a user and everything under it. Throws RecordNotFoundError if missing. */
+  exportUserProfile(userId: string): Promise<UserProfileExport>;
+  /**
+   * Re-creates an export (object or JSON string) as a NEW user profile with
+   * fresh ids throughout; never touches existing records. Throws ImportError
+   * — writing nothing — if the data isn't a valid export.
+   */
+  importUserProfile(data: unknown): Promise<UserProfile>;
 }
 
 export class ValidationError extends Error {
@@ -94,5 +193,13 @@ export class RecordNotFoundError extends Error {
   constructor(entity: string, id: string) {
     super(`${entity} not found: ${id}`);
     this.name = "RecordNotFoundError";
+  }
+}
+
+/** There must always be at least one user profile on the device. */
+export class LastUserProfileError extends Error {
+  constructor(id: string) {
+    super(`cannot delete the last user profile: ${id}`);
+    this.name = "LastUserProfileError";
   }
 }
