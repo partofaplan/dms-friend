@@ -10,6 +10,7 @@ import {
 } from "react";
 
 import { CharacterForm } from "@/components/character-form";
+import { OfflineNotice } from "@/components/offline-status";
 import type { CharacterDraft } from "@/lib/character-form-values";
 import {
   repository as defaultRepository,
@@ -24,6 +25,7 @@ import {
   downscaleImage,
   readFileAsDataUrl,
 } from "@/lib/scan/image";
+import { isOnline, useOnlineStatus } from "@/lib/pwa/online-status";
 import { assessDraft, fieldLabel, mapExtraction } from "@/lib/scan/map-extraction";
 
 export type ScanScreenProps = {
@@ -42,7 +44,9 @@ export type ScanScreenProps = {
  *     │                    └─rejected─┐   └─error─▶ error ─┤ (retry → extracting,
  *     └──── choose different image ◀──┴────────────────────┘  manual → review)
  * `rejected` is idle with a message (bad type/size). Every async step carries a
- * run id so results from an abandoned image are ignored.
+ * run id so results from an abandoned image are ignored. Extraction needs the
+ * network: offline, the picker and retry are disabled with an explanation,
+ * while manual entry (local only) keeps working.
  */
 type ScanState =
   | { step: "idle"; rejection?: string }
@@ -92,6 +96,9 @@ function reducer(state: ScanState, action: ScanAction): ScanState {
   }
 }
 
+const OFFLINE_REJECTION =
+  "You're offline, so the sheet can't be read. Reconnect to scan, or enter the character manually.";
+
 export function ScanScreen({
   repo = defaultRepository,
   prepareImage = downscaleImage,
@@ -100,6 +107,8 @@ export function ScanScreen({
   const inputId = useId();
   const hintId = useId();
   const attentionId = useId();
+  const offlineId = useId();
+  const online = useOnlineStatus();
   const [state, dispatch] = useReducer(reducer, { step: "idle" });
   const runRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
@@ -147,6 +156,11 @@ export function ScanScreen({
     if (!file) return;
 
     const run = nextRun();
+    // The picker is disabled offline; this covers a change that raced the event.
+    if (!isOnline()) {
+      dispatch({ type: "reset", rejection: OFFLINE_REJECTION });
+      return;
+    }
     const check = checkImageFile(file);
     if (!check.ok) {
       dispatch({ type: "reset", rejection: check.message });
@@ -219,6 +233,13 @@ export function ScanScreen({
         {statusMessage}
       </p>
 
+      {!online && showPicker && (
+        <OfflineNotice id={offlineId}>
+          Reading a sheet needs a connection. You can still enter the character manually; it saves
+          on this device.
+        </OfflineNotice>
+      )}
+
       {state.step === "idle" && state.rejection && (
         <p className="scan__error" role="alert">
           {state.rejection}
@@ -235,6 +256,8 @@ export function ScanScreen({
               type="button"
               className="scan__retry"
               onClick={() => runExtraction(state.image, nextRun())}
+              disabled={!online}
+              aria-describedby={online ? undefined : offlineId}
             >
               Try again
             </button>
@@ -271,7 +294,8 @@ export function ScanScreen({
             type="file"
             accept={ACCEPTED_IMAGE_TYPES}
             capture="environment"
-            aria-describedby={hintId}
+            aria-describedby={online ? hintId : `${hintId} ${offlineId}`}
+            disabled={!online}
             onChange={handleFile}
           />
           {state.step === "idle" && (
