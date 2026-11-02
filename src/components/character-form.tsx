@@ -15,6 +15,7 @@ import {
   formatLabel,
   toFormValues,
   validateCharacterForm,
+  type CharacterDraft,
   type CharacterFormValues,
 } from "@/lib/character-form-values";
 
@@ -24,7 +25,7 @@ export type CharacterFormProps = {
    * (e.g. scan output) when creating. Read once on mount — remount the form
    * (change its `key`) to load different values.
    */
-  initialValues?: Partial<CharacterInput>;
+  initialValues?: CharacterDraft;
   /** When set, the form updates this character instead of creating one. */
   characterId?: string;
   onSaved?: (character: Character) => void;

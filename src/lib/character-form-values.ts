@@ -31,6 +31,19 @@ export type CharacterFormValues = {
   notes: string;
 };
 
+/**
+ * Partial character data used to pre-fill the form — an existing record, or a
+ * best-effort scan where any field (including nested HP/ability values) may be
+ * missing.
+ */
+export type CharacterDraft = Omit<
+  Partial<CharacterInput>,
+  "hitPoints" | "abilityScores"
+> & {
+  hitPoints?: Partial<CharacterInput["hitPoints"]>;
+  abilityScores?: Partial<CharacterInput["abilityScores"]>;
+};
+
 /** Field path (e.g. "abilityScores.strength") → first error message. */
 export type CharacterFormErrors = Partial<Record<string, string>>;
 
@@ -48,7 +61,7 @@ function numberToString(value: number | undefined): string {
 
 /** Builds form values from (possibly partial) character data, e.g. an existing record or scan output. */
 export function toFormValues(
-  initial: Partial<CharacterInput> = {},
+  initial: CharacterDraft = {},
 ): CharacterFormValues {
   const scores = initial.abilityScores;
   return {
