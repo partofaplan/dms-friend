@@ -25,16 +25,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const NUMERIC_STRING = /^[+-]?\d+(?:\.\d+)?$/;
 
-/** A finite number, or a numeric string; anything else → undefined. */
+/** A finite number, or a numeric string that parses to one; anything else → undefined. */
 function toNumber(value: unknown): number | undefined {
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? value : undefined;
-  }
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    return NUMERIC_STRING.test(trimmed) ? Number(trimmed) : undefined;
-  }
-  return undefined;
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && NUMERIC_STRING.test(value.trim())
+        ? Number(value.trim())
+        : undefined;
+  // Very long digit strings overflow to Infinity — treat as unreadable.
+  return parsed !== undefined && Number.isFinite(parsed) ? parsed : undefined;
 }
 
 /** A non-blank string (trimmed); anything else → undefined. */

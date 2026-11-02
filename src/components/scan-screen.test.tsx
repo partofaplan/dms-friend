@@ -173,6 +173,8 @@ describe("ScanScreen", () => {
         "Saved Ilsa Brightwater to the roster.",
       ),
     );
+    // Let next/link's deferred post-mount (prefetch visibility) update settle inside act.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
     expect(create).toHaveBeenCalledTimes(1);
     const saved = await repo.characters.getAll();
     expect(saved).toHaveLength(1);
@@ -188,8 +190,6 @@ describe("ScanScreen", () => {
       "href",
       "/roster",
     );
-    // Let next/link's deferred post-mount (prefetch visibility) update settle inside act.
-    await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
 
     fireEvent.click(screen.getByRole("button", { name: "Scan another" }));
     expect(screen.getByLabelText("Character sheet photo")).toBeInTheDocument();
@@ -247,5 +247,115 @@ describe("ScanScreen", () => {
 
     expect(screen.queryByRole("form")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Character sheet photo")).toBeInTheDocument();
+  });
+
+  it("leaves unread required fields blank and blocks saving until they're filled", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        data: {
+          ...extracted,
+          level: "third",
+          hitPoints: { max: 22, current: 22, temporary: null },
+          abilityScores: { ...extracted.abilityScores, strength: null, dexterity: undefined },
+        },
+        raw: "{}",
+      }),
+    );
+    const create = vi.spyOn(repo.characters, "create");
+    renderScan();
+    pick(pngFile());
+    await screen.findByRole("form", { name: "New character" });
+
+    // No invented defaults (level 1, score 10, temp HP 0) for what the AI didn't read.
+    expect(spinbutton("Level")).toHaveValue(null);
+    expect(spinbutton("Strength")).toHaveValue(null);
+    expect(spinbutton("Dexterity")).toHaveValue(null);
+    expect(spinbutton("Temporary HP")).toHaveValue(null);
+    expect(spinbutton("Constitution")).toHaveValue(12);
+    const attention = screen.getByRole("list", { name: /Check these fields/ });
+    expect(attention).toHaveTextContent("Level");
+    expect(attention).toHaveTextContent("Strength");
+    expect(attention).toHaveTextContent("Dexterity");
+
+    fireEvent.click(screen.getByRole("button", { name: "Add character" }));
+
+    expect(await screen.findByText(/Please fix 3 fields/)).toBeInTheDocument();
+    expect(spinbutton("Level")).toHaveAttribute("aria-invalid", "true");
+    expect(spinbutton("Strength")).toHaveAttribute("aria-invalid", "true");
+    expect(spinbutton("Dexterity")).toHaveAttribute("aria-invalid", "true");
+    expect(create).not.toHaveBeenCalled();
+    expect(await repo.characters.getAll()).toHaveLength(0);
+
+    fireEvent.change(spinbutton("Level"), { target: { value: "3" } });
+    fireEvent.change(spinbutton("Strength"), { target: { value: "9" } });
+    fireEvent.change(spinbutton("Dexterity"), { target: { value: "15" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add character" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent("Saved Ilsa to the roster."),
+    );
+    // Let next/link's deferred post-mount (prefetch visibility) update settle inside act.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    const saved = await repo.characters.getAll();
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({
+      level: 3,
+      hitPoints: { max: 22, current: 22, temporary: 0 },
+      abilityScores: { strength: 9, dexterity: 15, constitution: 12 },
+    });
+  });
+
+  it("keeps starting defaults when entering a character manually", async () => {
+    renderScan();
+    fireEvent.click(screen.getByRole("button", { name: "Enter manually instead" }));
+
+    expect(screen.getByRole("form", { name: "New character" })).toBeInTheDocument();
+    expect(spinbutton("Level")).toHaveValue(1);
+    expect(spinbutton("Strength")).toHaveValue(10);
+    expect(spinbutton("Temporary HP")).toHaveValue(0);
+  });
+
+  it("ignores a save that finishes after the user started a newer scan", async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({ data: extracted, raw: "{}" }),
+    );
+    const realCreate = repo.characters.create.bind(repo.characters);
+    let resolveCreate!: () => void;
+    const create = vi
+      .spyOn(repo.characters, "create")
+      .mockImplementationOnce(
+        (input) =>
+          new Promise((resolve) => {
+            resolveCreate = () => resolve(realCreate(input));
+          }),
+      );
+    renderScan();
+    pick(pngFile());
+    await screen.findByRole("form", { name: "New character" });
+
+    fireEvent.change(spinbutton("Current HP"), { target: { value: "15" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add character" }));
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("button", { name: "Saving…" })).toBeDisabled();
+
+    // Move on to a new scan while the first save is still in flight.
+    fireEvent.click(
+      screen.getByRole("button", { name: "Retake or choose a different image" }),
+    );
+    pick(pngFile("second.png"));
+    await screen.findByRole("form", { name: "New character" });
+    expect(spinbutton("Current HP")).toHaveValue(null);
+
+    await act(async () => {
+      resolveCreate();
+    });
+    await waitFor(async () => expect(await repo.characters.getAll()).toHaveLength(1));
+
+    // The newer run's review is untouched by the stale completion.
+    expect(screen.getByRole("form", { name: "New character" })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Sheet read.");
+    expect(screen.queryByRole("button", { name: "Scan another" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add character" })).toBeEnabled();
+    expect(create).toHaveBeenCalledTimes(1);
   });
 });

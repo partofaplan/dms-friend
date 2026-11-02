@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 
 import {
   ABILITIES,
@@ -17,6 +17,7 @@ import {
   validateCharacterForm,
   type CharacterDraft,
   type CharacterFormValues,
+  type MissingValueFill,
 } from "@/lib/character-form-values";
 
 export type CharacterFormProps = {
@@ -26,6 +27,11 @@ export type CharacterFormProps = {
    * (change its `key`) to load different values.
    */
   initialValues?: CharacterDraft;
+  /**
+   * How fields absent from `initialValues` are filled: `"defaults"` for a fresh
+   * character, `"blank"` for a scan draft (never invent unread values).
+   */
+  missingValues?: MissingValueFill;
   /** When set, the form updates this character instead of creating one. */
   characterId?: string;
   onSaved?: (character: Character) => void;
@@ -40,6 +46,7 @@ type ListField = "savingThrowProficiencies" | "skillProficiencies" | "conditions
 
 export function CharacterForm({
   initialValues,
+  missingValues = "defaults",
   characterId,
   onSaved,
   onCancel,
@@ -47,11 +54,13 @@ export function CharacterForm({
 }: CharacterFormProps) {
   const idPrefix = useId();
   const [values, setValues] = useState<CharacterFormValues>(() =>
-    toFormValues(initialValues),
+    toFormValues(initialValues, missingValues),
   );
   const [submitted, setSubmitted] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Synchronous guard: `saving` lags a rapid second submit by a render.
+  const savingRef = useRef(false);
 
   const isEdit = characterId !== undefined;
   // Errors are derived from the schema on every change once the user has tried to submit.
@@ -91,6 +100,7 @@ export function CharacterForm({
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (savingRef.current) return;
     setSubmitted(true);
     setSaveError(null);
 
@@ -107,6 +117,7 @@ export function CharacterForm({
         ? { ...data, rawScan: initialValues.rawScan }
         : data;
 
+    savingRef.current = true;
     setSaving(true);
     try {
       const saved = isEdit
@@ -124,6 +135,7 @@ export function CharacterForm({
         error instanceof Error ? error.message : "Could not save character.",
       );
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   }

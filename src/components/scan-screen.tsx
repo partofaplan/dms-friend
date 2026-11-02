@@ -178,6 +178,12 @@ export function ScanScreen({
     dispatch({ type: "reset" });
   }
 
+  /** Ignores a save that finished after the user moved on to a newer run. */
+  function handleSaved(run: number, character: Character) {
+    if (run !== runRef.current) return;
+    dispatch({ type: "saved", character });
+  }
+
   function enterManually() {
     dispatch({ type: "review", run: nextRun(), draft: {} });
   }
@@ -305,7 +311,8 @@ export function ScanScreen({
             key={state.run}
             repo={repo}
             initialValues={state.draft}
-            onSaved={(character) => dispatch({ type: "saved", character })}
+            missingValues={state.image ? "blank" : "defaults"}
+            onSaved={(character) => handleSaved(state.run, character)}
             onCancel={startOver}
           />
         </div>

@@ -53,7 +53,19 @@ export type ValidationResult =
   | { success: true; data: CharacterInputOutput; errors: CharacterFormErrors }
   | { success: false; errors: CharacterFormErrors };
 
+/**
+ * How `toFormValues` fills values missing from its input:
+ *  - `"defaults"`: a fresh character — sensible starting values (level 1,
+ *    ability scores 10, temporary HP 0) so the manual form isn't empty.
+ *  - `"blank"`: a scan draft — anything the AI didn't read stays empty, so the
+ *    form never shows an invented value and the schema blocks saving until the
+ *    user supplies the required ones.
+ */
+export type MissingValueFill = "defaults" | "blank";
+
+const DEFAULT_LEVEL = 1;
 const DEFAULT_ABILITY_SCORE = 10;
+const DEFAULT_TEMPORARY_HP = 0;
 
 function numberToString(value: number | undefined): string {
   return value === undefined ? "" : String(value);
@@ -62,23 +74,29 @@ function numberToString(value: number | undefined): string {
 /** Builds form values from (possibly partial) character data, e.g. an existing record or scan output. */
 export function toFormValues(
   initial: CharacterDraft = {},
+  missing: MissingValueFill = "defaults",
 ): CharacterFormValues {
   const scores = initial.abilityScores;
+  /** The starting value for a fresh character; nothing for a scan draft. */
+  const fallback = (value: number) =>
+    missing === "defaults" ? value : undefined;
   return {
     name: initial.name ?? "",
     race: initial.race ?? "",
     className: initial.className ?? "",
-    level: numberToString(initial.level ?? 1),
+    level: numberToString(initial.level ?? fallback(DEFAULT_LEVEL)),
     armorClass: numberToString(initial.armorClass),
     hitPoints: {
       max: numberToString(initial.hitPoints?.max),
       current: numberToString(initial.hitPoints?.current),
-      temporary: numberToString(initial.hitPoints?.temporary ?? 0),
+      temporary: numberToString(
+        initial.hitPoints?.temporary ?? fallback(DEFAULT_TEMPORARY_HP),
+      ),
     },
     abilityScores: Object.fromEntries(
       ABILITIES.map((ability) => [
         ability,
-        numberToString(scores?.[ability] ?? DEFAULT_ABILITY_SCORE),
+        numberToString(scores?.[ability] ?? fallback(DEFAULT_ABILITY_SCORE)),
       ]),
     ) as Record<Ability, string>,
     savingThrowProficiencies: [...(initial.savingThrowProficiencies ?? [])],

@@ -67,6 +67,20 @@ describe("mapExtraction", () => {
     expect(draft.hitPoints).toBeUndefined();
   });
 
+  it("leaves numeric strings that overflow to Infinity empty", () => {
+    const draft = mapExtraction({
+      level: "9".repeat(400),
+      armorClass: "1e999",
+      hitPoints: { max: `-${"9".repeat(400)}` },
+      passivePerception: Infinity,
+    });
+
+    expect(draft.level).toBeUndefined();
+    expect(draft.armorClass).toBeUndefined();
+    expect(draft.hitPoints).toBeUndefined();
+    expect(draft.passivePerception).toBeUndefined();
+  });
+
   it("drops unknown enum values without failing, and normalizes known ones", () => {
     const draft = mapExtraction({
       ...fullExtraction(),
