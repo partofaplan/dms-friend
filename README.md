@@ -92,13 +92,31 @@ The chart lives in `deploy/helm/dm-friend`. It deploys one replica, a ClusterIP 
 helm lint deploy/helm/dm-friend
 helm template dm-friend deploy/helm/dm-friend
 
-# k3d: import the local image (pullPolicy IfNotPresent), then install
-k3d image import dm-friend:local -c <cluster>
-kubectl create secret generic dm-friend-openai --from-literal=OPENAI_API_KEY=sk-...
-helm upgrade --install dm-friend deploy/helm/dm-friend --set openai.existingSecret=dm-friend-openai
+# Build and import the image into the k3d cluster (pullPolicy IfNotPresent, no registry)
+docker build -t dm-friend:0.1.0 .
+k3d image import dm-friend:0.1.0 -c <cluster>          # all nodes must be Ready
+
+# Create the OpenAI Secret from your environment (the value never touches a file)
+kubectl create namespace dm-friend
+kubectl create secret generic dm-friend-openai -n dm-friend \
+  --from-literal=OPENAI_API_KEY="$OPENAI_API_KEY"
+
+# Install, pointing at that Secret and the imported image tag
+helm upgrade --install dm-friend deploy/helm/dm-friend -n dm-friend \
+  --set image.tag=0.1.0 \
+  --set openai.existingSecret=dm-friend-openai
 ```
 
-For the OpenAI key, use `openai.existingSecret` to point at a Secret you created out of band, which is recommended. Otherwise the chart templates its own Secret from `openai.apiKey`. That value is empty by default, so pass it with `--set openai.apiKey=...` at install time and never commit it. Set `ingress.host`, `ingress.className`, `ingress.funnel`, and `ingress.annotations` in `values.yaml`.
+For the OpenAI key, use `openai.existingSecret` to point at a Secret you created out of band (recommended — the key stays out of Helm values and git). Otherwise the chart templates its own Secret from `openai.apiKey`, which is empty by default, so pass it with `--set openai.apiKey=...` at install time and never commit it. Set `ingress.host`, `ingress.className`, `ingress.funnel`, and `ingress.annotations` in `values.yaml`.
+
+The Tailscale operator derives the MagicDNS hostname from the ingress's `spec.tls.hosts` short name (`ingress.host`, default `dmfriend`) — not the ingress resource name. Read the assigned address with:
+
+```bash
+kubectl get ingress dm-friend -n dm-friend \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+```
+
+On the Hercules cluster this serves the app at `https://dmfriend.tail18466c.ts.net` — reachable from any device on the tailnet, including a phone for installing the PWA. Note: `k3d image import` fails for a `NotReady` node; make sure `kubectl get nodes` shows all nodes `Ready` before importing.
 
 ### AI endpoints
 
