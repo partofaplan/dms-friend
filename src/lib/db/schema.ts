@@ -7,6 +7,12 @@ import { monsterStatBlockSchema } from "@/lib/monsters/types";
  *  - an *input* schema for what callers supply on create (no id/timestamps)
  *  - a stored schema that adds the generated id and timestamps
  * Types are inferred from the schemas so they can never drift apart.
+ *
+ * Scoping: characters, combatants and chat messages each belong to exactly one
+ * party profile. `partyProfileId` lives only on the *stored* schemas — the
+ * repository injects it from the scope (`repository.forParty(id)`) on create,
+ * so input schemas (and the forms built on them) never carry it and an update
+ * can never move a record to another party.
  */
 
 export const ABILITIES = [
@@ -122,6 +128,8 @@ export const characterInputSchema = z.object({
 
 export const characterSchema = characterInputSchema.extend({
   id: z.uuid(),
+  /** The owning party profile; injected by the repository, never by callers. */
+  partyProfileId: z.uuid(),
   createdAt: timestamp,
   updatedAt: timestamp,
 });
@@ -133,6 +141,11 @@ export type Character = z.infer<typeof characterSchema>;
 /** Fields that may be changed by an update; nested objects are replaced wholesale. */
 export type CharacterUpdate = Partial<CharacterInput>;
 
+/*
+ * Legacy party (a named list of character ids). Superseded by party *profiles*,
+ * which scope characters/combatants/chat directly. The table and its API are
+ * kept as-is so no existing data is lost, but new code should not use it.
+ */
 export const partyInputSchema = z.object({
   name: z.string().trim().min(1, "name is required"),
   characterIds: uniqueList(z.uuid()).default([]),
@@ -170,6 +183,8 @@ export const combatantInputSchema = z.object({
 
 export const combatantSchema = combatantInputSchema.extend({
   id: z.uuid(),
+  /** The owning party profile; injected by the repository, never by callers. */
+  partyProfileId: z.uuid(),
   createdAt: timestamp,
   updatedAt: timestamp,
 });
@@ -183,3 +198,61 @@ export type CombatantUpdate = Partial<CombatantInput>;
 export function combatantName(combatant: Pick<Combatant, "label" | "monster">): string {
   return combatant.label ?? combatant.monster.name;
 }
+
+/*
+ * Profiles. A user profile owns many party profiles; each party profile is the
+ * scope for its own characters, monster stable and chat history. Everything is
+ * local to the device — there is no auth.
+ */
+const profileName = z.string().trim().min(1, "name is required");
+
+export const userProfileInputSchema = z.object({
+  name: profileName,
+});
+
+export const userProfileSchema = userProfileInputSchema.extend({
+  id: z.uuid(),
+  createdAt: timestamp,
+  updatedAt: timestamp,
+});
+
+export type UserProfileInput = z.input<typeof userProfileInputSchema>;
+export type UserProfile = z.infer<typeof userProfileSchema>;
+
+export const partyProfileInputSchema = z.object({
+  /** The owning user profile. */
+  userId: z.uuid(),
+  name: profileName,
+});
+
+export const partyProfileSchema = partyProfileInputSchema.extend({
+  id: z.uuid(),
+  createdAt: timestamp,
+  updatedAt: timestamp,
+});
+
+export type PartyProfileInput = z.input<typeof partyProfileInputSchema>;
+export type PartyProfile = z.infer<typeof partyProfileSchema>;
+
+export const CHAT_MESSAGE_ROLES = ["user", "assistant"] as const;
+
+/** One persisted chat turn. Content is stored verbatim (not trimmed: it may be markdown). */
+export const chatMessageInputSchema = z.object({
+  role: z.enum(CHAT_MESSAGE_ROLES),
+  content: z.string().min(1, "content is required"),
+});
+
+export const chatMessageRecordSchema = chatMessageInputSchema.extend({
+  id: z.uuid(),
+  /** The owning party profile; injected by the repository, never by callers. */
+  partyProfileId: z.uuid(),
+  /**
+   * Position in the party's conversation (0, 1, 2, …), assigned on append.
+   * Orders the history; timestamps alone can tie within a millisecond.
+   */
+  sequence: z.number().int().min(0),
+  createdAt: timestamp,
+});
+
+export type ChatMessageInput = z.input<typeof chatMessageInputSchema>;
+export type ChatMessageRecord = z.infer<typeof chatMessageRecordSchema>;
