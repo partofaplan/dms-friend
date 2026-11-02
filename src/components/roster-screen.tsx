@@ -9,6 +9,7 @@ import {
   type Character,
   type Repository,
 } from "@/lib/db";
+import { useWriteQueue } from "@/lib/use-write-queue";
 
 type View =
   | { kind: "list" }
@@ -28,7 +29,8 @@ export type RosterScreenProps = {
  * Writes for a character are serialized through a per-id queue, and each HP
  * nudge reads the stored record before computing the new value, so rapid or
  * interleaved clicks apply cumulatively instead of racing on a stale render
- * snapshot. While a character has work queued, its row controls are disabled.
+ * snapshot (see useWriteQueue). While a character has work queued, its row
+ * controls are disabled.
  */
 export function RosterScreen({ repo = defaultRepository }: RosterScreenProps) {
   const [characters, setCharacters] = useState<Character[] | null>(null);
@@ -36,11 +38,7 @@ export function RosterScreen({ repo = defaultRepository }: RosterScreenProps) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [view, setView] = useState<View>({ kind: "list" });
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
-  // Number of in-flight operations per character id.
-  const [pending, setPending] = useState<ReadonlyMap<string, number>>(
-    () => new Map(),
-  );
-  const queues = useRef(new Map<string, Promise<void>>());
+  const { enqueue, isPending } = useWriteQueue();
   const addButtonRef = useRef<HTMLButtonElement>(null);
 
   const load = useCallback(async () => {
@@ -67,20 +65,6 @@ export function RosterScreen({ repo = defaultRepository }: RosterScreenProps) {
       active = false;
     };
   }, [repo]);
-
-  /** Runs `op` after any earlier operation for the same character settles. */
-  const enqueue = (id: string, op: () => Promise<void>): Promise<void> => {
-    setPending((counts) => withCount(counts, id, 1));
-    const run: Promise<void> = (queues.current.get(id) ?? Promise.resolve())
-      .then(op)
-      .catch(() => {})
-      .finally(() => {
-        if (queues.current.get(id) === run) queues.current.delete(id);
-        setPending((counts) => withCount(counts, id, -1));
-      });
-    queues.current.set(id, run);
-    return run;
-  };
 
   const handleSaved = async () => {
     setView({ kind: "list" });
@@ -192,7 +176,7 @@ export function RosterScreen({ repo = defaultRepository }: RosterScreenProps) {
             <RosterRow
               key={character.id}
               character={character}
-              busy={(pending.get(character.id) ?? 0) > 0}
+              busy={isPending(character.id)}
               confirmingDelete={pendingDeleteId === character.id}
               onEdit={() => setView({ kind: "edit", character })}
               onRequestDelete={() => setPendingDeleteId(character.id)}
@@ -332,18 +316,6 @@ function RosterRow({
       </article>
     </li>
   );
-}
-
-function withCount(
-  counts: ReadonlyMap<string, number>,
-  id: string,
-  delta: number,
-): ReadonlyMap<string, number> {
-  const next = new Map(counts);
-  const count = (next.get(id) ?? 0) + delta;
-  if (count > 0) next.set(id, count);
-  else next.delete(id);
-  return next;
 }
 
 function errorMessage(error: unknown, fallback: string): string {

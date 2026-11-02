@@ -1,9 +1,16 @@
+import { normalizeMonster } from "@/lib/monsters/types";
+import { goblinRaw } from "@/test-utils/open5e-fixtures";
+
 import {
   characterInputSchema,
   characterSchema,
+  combatantInputSchema,
+  combatantName,
+  combatantSchema,
   partyInputSchema,
   partySchema,
   type CharacterInput,
+  type CombatantInput,
 } from "./schema";
 
 const NOW = "2026-01-01T00:00:00.000Z";
@@ -137,5 +144,55 @@ describe("party schema", () => {
     ["duplicate character ids", { name: "P", characterIds: [ID, ID] }],
   ])("rejects %s", (_label, input) => {
     expect(partyInputSchema.safeParse(input).success).toBe(false);
+  });
+});
+
+describe("combatant schema", () => {
+  const goblin = normalizeMonster(goblinRaw)!;
+
+  function validCombatant(): CombatantInput {
+    return {
+      monster: goblin,
+      label: "Goblin 2",
+      hitPoints: { max: 7, current: 4, temporary: 3 },
+      conditions: ["prone", "poisoned"],
+      notes: "Hiding behind the cart",
+    };
+  }
+
+  it("accepts a valid combatant and applies defaults", () => {
+    expect(combatantInputSchema.parse(validCombatant())).toEqual(validCombatant());
+    const minimal = combatantInputSchema.parse({
+      monster: goblin,
+      hitPoints: { max: 7, current: 7 },
+    });
+    expect(minimal.conditions).toEqual([]);
+    expect(minimal.hitPoints.temporary).toBe(0);
+    expect(minimal.label).toBeUndefined();
+
+    const stored = combatantSchema.parse({
+      ...validCombatant(),
+      id: ID,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    expect(stored.id).toBe(ID);
+    expect(combatantName(stored)).toBe("Goblin 2");
+    expect(combatantName({ ...stored, label: undefined })).toBe("Goblin");
+  });
+
+  it.each<[string, (input: CombatantInput) => unknown]>([
+    ["negative current HP", (c) => ({ ...c, hitPoints: { max: 7, current: -1 } })],
+    ["current HP above max", (c) => ({ ...c, hitPoints: { max: 7, current: 8 } })],
+    ["zero max HP", (c) => ({ ...c, hitPoints: { max: 0, current: 0 } })],
+    ["negative temporary HP", (c) => ({ ...c, hitPoints: { max: 7, current: 7, temporary: -2 } })],
+    ["an unknown condition", (c) => ({ ...c, conditions: ["sleepy"] })],
+    ["duplicate conditions", (c) => ({ ...c, conditions: ["prone", "prone"] })],
+    ["a blank label", (c) => ({ ...c, label: "   " })],
+    ["a monster with an empty name", (c) => ({ ...c, monster: { ...goblin, name: "  " } })],
+    ["an incomplete stat block", (c) => ({ ...c, monster: { ...goblin, actions: undefined } })],
+    ["a missing monster", (c) => ({ ...c, monster: undefined })],
+  ])("rejects %s", (_label, mutate) => {
+    expect(combatantInputSchema.safeParse(mutate(validCombatant())).success).toBe(false);
   });
 });

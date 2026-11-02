@@ -27,6 +27,7 @@ const TABS = [
   ["Home", "/"],
   ["Roster", "/roster"],
   ["Monsters", "/monsters"],
+  ["Stable", "/stable"],
   ["Scan", "/scan"],
   ["Chat", "/chat"],
 ] as const;
@@ -49,6 +50,7 @@ describe("BottomNav", () => {
     ["/monsters", "Monsters"],
     ["/scan", "Scan"],
     ["/chat", "Chat"],
+    ["/stable", "Stable"],
     ["/roster/abc", "Roster"],
   ])("marks only the active tab with aria-current on %s", (path, active) => {
     pathname = path;
@@ -81,6 +83,7 @@ describe("BottomNav", () => {
     }
     expect(within(nav).getByRole("link", { name: "Home" })).toBeInTheDocument();
     expect(within(nav).getByRole("link", { name: "Roster" })).toBeInTheDocument();
+    expect(within(nav).getByRole("link", { name: "Stable" })).toBeInTheDocument();
 
     setOnline(true);
     expect(within(nav).getByRole("link", { name: "Chat" })).toBeInTheDocument();

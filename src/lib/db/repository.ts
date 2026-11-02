@@ -1,8 +1,13 @@
 import { z } from "zod";
+import type { MonsterStatBlock } from "@/lib/monsters/types";
+
 import type {
   Character,
   CharacterInput,
   CharacterUpdate,
+  Combatant,
+  CombatantInput,
+  CombatantUpdate,
   Party,
   PartyInput,
   PartyUpdate,
@@ -39,9 +44,38 @@ export interface PartyRepository {
   listCharacters(partyId: string): Promise<Character[]>;
 }
 
+export interface AddMonsterOptions {
+  /** Display name; when omitted, duplicates are auto-numbered ("Goblin", "Goblin 2"). */
+  label?: string;
+  /** Overrides the stat block's hit points (e.g. rolled HP, or a block without HP). */
+  maxHp?: number;
+}
+
+/** The monster stable: saved monsters with live combat state, in the order added. */
+export interface CombatantRepository {
+  create(input: CombatantInput): Promise<Combatant>;
+  /**
+   * Saves a stat block to the stable at full HP with no conditions. The same
+   * monster may be added any number of times; each is a distinct combatant.
+   * Throws ValidationError if the block has no hit points and no maxHp is given.
+   */
+  addFromMonster(
+    monster: MonsterStatBlock,
+    options?: AddMonsterOptions,
+  ): Promise<Combatant>;
+  getById(id: string): Promise<Combatant | undefined>;
+  /** Every combatant, oldest first (the order they joined the fight). */
+  getAll(): Promise<Combatant[]>;
+  /** Applies a shallow partial update; throws RecordNotFoundError if missing. */
+  update(id: string, changes: CombatantUpdate): Promise<Combatant>;
+  /** No-op if missing. */
+  delete(id: string): Promise<void>;
+}
+
 export interface Repository {
   characters: CharacterRepository;
   parties: PartyRepository;
+  combatants: CombatantRepository;
 }
 
 export class ValidationError extends Error {
