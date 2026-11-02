@@ -9,7 +9,19 @@ export default function Home() {
     <main className="home-shell">
       <header className="app-header">
         <div className="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 64 64" fill="none"><path d="m32 5 24 14v27L32 59 8 46V19L32 5Z" /><path d="m32 5-13 34h26L32 5ZM8 19l11 20-11 7m48-27L45 39l11 7M19 39l13 20 13-20M8 19h48" /></svg>
+          <svg viewBox="0 0 360 210" fill="none" focusable="false">
+            <path d="M73 8v30M287 8v30" stroke="#a58450" strokeWidth="5" />
+            <path d="M180 23c-40 0-49 22-85 22H23v130h72c36 0 45 20 85 20s49-20 85-20h72V45h-72c-36 0-45-22-85-22Z" fill="#38291e" stroke="#e6bc75" strokeWidth="2" />
+            <path d="M180 31c-40 0-49 22-85 22H31v114h64c36 0 45 20 85 20s49-20 85-20h64V53h-64c-36 0-45-22-85-22Z" stroke="#947958" />
+            <path d="M40 76h70m140 0h70M40 151h55m170 0h55" stroke="#a58450" />
+            <g stroke="#e6bc75" strokeWidth="1.5" strokeLinejoin="round">
+              <path d="m180 43 22 13v25l-22 13-22-13V56Z" fill="#211812" />
+              <path d="m180 43-12 32h24l-12-32Zm-22 13 10 19-10 6m44-25-10 19 10 6m-34-6 12 19 12-19" />
+            </g>
+            <text x="180" y="135" textAnchor="middle" fill="#f5ead5" fontFamily="Georgia, serif" fontWeight="bold" fontSize="39" letterSpacing="-1">DM’s Friend</text>
+            <path d="M118 157h45m34 0h45m-62-6 6 6-6 6-6-6Z" stroke="#e6bc75" />
+            <g fill="#e6bc75"><circle cx="42" cy="64" r="2" /><circle cx="318" cy="64" r="2" /><circle cx="42" cy="157" r="2" /><circle cx="318" cy="157" r="2" /></g>
+          </svg>
         </div>
         <span className="brand-caption">THE DUNGEON MASTER’S COMPANION</span>
         <h1>{APP_NAME}</h1>

@@ -3,8 +3,6 @@ import type { MetadataRoute } from "next";
 import {
   APP_DESCRIPTION,
   APP_NAME,
-  BACKGROUND_COLOR,
-  THEME_COLOR,
 } from "@/lib/pwa/constants";
 
 export default function manifest(): MetadataRoute.Manifest {
@@ -16,8 +14,8 @@ export default function manifest(): MetadataRoute.Manifest {
     scope: "/",
     display: "standalone",
     orientation: "portrait",
-    theme_color: THEME_COLOR,
-    background_color: BACKGROUND_COLOR,
+    theme_color: "#1c1511",
+    background_color: "#1c1511",
     icons: [
       {
         src: "/icons/icon-192.png",
