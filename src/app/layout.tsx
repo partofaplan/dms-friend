@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from "next";
 
+import { BottomNav } from "@/components/bottom-nav";
+import { OfflineBanner } from "@/components/offline-status";
 import { ServiceWorkerRegistration } from "@/components/service-worker-registration";
 import { APP_DESCRIPTION, APP_NAME, THEME_COLOR } from "@/lib/pwa/constants";
 
@@ -37,8 +39,11 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className="min-h-dvh antialiased">
-        {children}
+      <body className="app-body min-h-dvh antialiased">
+        <OfflineBanner />
+        {/* Leaves room for the fixed bottom nav (see .app-content in globals.css). */}
+        <div className="app-content">{children}</div>
+        <BottomNav />
         <ServiceWorkerRegistration />
       </body>
     </html>

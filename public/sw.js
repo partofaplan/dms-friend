@@ -1,38 +1,70 @@
 /* DM Friend service worker: caches the app shell so the PWA opens offline. */
 
 // Bump to invalidate every cache on the next deploy.
-const VERSION = "v1";
+const VERSION = "v2";
 // Every cache this worker owns starts with this prefix; activation only prunes these.
 const CACHE_PREFIX = "dm-friend-";
 const SHELL_CACHE = `${CACHE_PREFIX}shell-${VERSION}`;
 const RUNTIME_CACHE = `${CACHE_PREFIX}runtime-${VERSION}`;
 
-// Required: install fails (and the previous worker stays active) if any of these can't be cached.
+// Required static files: install fails (and the previous worker stays active)
+// if any of these can't be cached.
 const SHELL_URLS = [
-  "/",
   "/manifest.webmanifest",
   "/icons/icon-192.png",
   "/icons/icon-512.png",
   "/icons/icon.svg",
 ];
 
-// Hashed build assets referenced by the shell HTML (scripts, styles, fonts).
+/*
+ * Top-level routes whose page shells are precached so a cold offline launch can
+ * open any of them (keep in sync with APP_ROUTES in src/components/nav-items.ts).
+ *
+ * Required routes are the offline core: the home shell (the fallback for every
+ * other navigation) and the roster (local data, fully usable offline). If one of
+ * them, or any asset it references, can't be cached, install fails.
+ *
+ * Best-effort routes only matter online anyway (monsters/chat/scan show an
+ * offline state), so one failing must not block an otherwise good update. Each
+ * is all-or-nothing: its HTML is stored only after all of its assets are, so a
+ * cached page never references a missing chunk. A skipped route falls back to
+ * the home shell offline, as before.
+ */
+const REQUIRED_ROUTES = ["/", "/roster"];
+const BEST_EFFORT_ROUTES = ["/scan", "/monsters", "/chat"];
+
+// Hashed build assets referenced by a page's HTML (scripts, styles, fonts).
 // Backslash is excluded because the inline RSC payload uses escaped quotes (\").
 const STATIC_ASSET_PATTERN = /\/_next\/static\/[^"'\s)\\]+/g;
+
+/** Caches a route's HTML plus every static asset it references; rejects on any failure. */
+async function precacheRoute(cache, path) {
+  const response = await fetch(path, { cache: "reload" });
+  if (!response.ok) throw new Error(`Precache failed for ${path}: ${response.status}`);
+  const html = await response.clone().text();
+  const assets = [...new Set(html.match(STATIC_ASSET_PATTERN) ?? [])];
+  // Routes share most chunks; skip whatever an earlier route already stored.
+  const missing = [];
+  for (const asset of assets) {
+    if (!(await cache.match(asset))) missing.push(asset);
+  }
+  await cache.addAll(missing);
+  // Written last so the page is only ever cached alongside its assets.
+  await cache.put(path, response);
+}
 
 async function precacheShell() {
   const cache = await caches.open(SHELL_CACHE);
   // addAll rejects if any request fails, which fails the install.
   await cache.addAll(SHELL_URLS);
 
-  // The JS/CSS the shell HTML references is also required: without it the first
-  // offline launch renders broken HTML. Any failure here rejects the install so
-  // the new worker never activates and the previous caches are left intact.
-  const response = await cache.match("/");
-  if (!response) throw new Error("Shell HTML missing after precache");
-  const html = await response.text();
-  const requiredAssets = [...new Set(html.match(STATIC_ASSET_PATTERN) ?? [])];
-  await cache.addAll(requiredAssets);
+  // Without its JS/CSS a page renders broken offline, so required routes and
+  // their assets reject the install; the previous caches are left intact.
+  for (const path of REQUIRED_ROUTES) await precacheRoute(cache, path);
+
+  // Best-effort routes run after the required ones so they reuse the shared
+  // chunks already cached; failures are swallowed per route.
+  await Promise.allSettled(BEST_EFFORT_ROUTES.map((path) => precacheRoute(cache, path)));
 }
 
 self.addEventListener("install", (event) => {
@@ -83,8 +115,10 @@ async function networkFirstNavigation(event) {
     if (response.ok) await putInRuntime(request, response.clone());
     return response;
   } catch {
+    // Exact route first (a newer runtime copy beats the precached shell), then
+    // the home shell, which can boot the app for any route.
     return (
-      (await matchIn(RUNTIME_CACHE, request)) ??
+      (await matchPreferringRuntime(request)) ??
       (await matchIn(RUNTIME_CACHE, "/")) ??
       (await matchIn(SHELL_CACHE, "/")) ??
       Response.error()

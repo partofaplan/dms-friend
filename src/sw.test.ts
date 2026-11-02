@@ -79,6 +79,20 @@ const SHELL_HTML = `<html><head>
 <script>self.__next_f.push([1,"HL[\\"/_next/static/css/app.css\\",\\"style\\"]"])</script>
 </head><body>shell v1</body></html>`;
 
+const FEATURE_ROUTES = ["/roster", "/scan", "/monsters", "/chat"];
+
+/** A feature page: the shared app chunks plus its own page chunk. */
+function pageChunk(route: string) {
+  return `/_next/static/chunks/app${route}/page.js`;
+}
+function pageHtml(route: string) {
+  return `<html><head>
+<link rel="stylesheet" href="/_next/static/css/app.css">
+<script src="/_next/static/chunks/main.js"></script>
+<script src="${pageChunk(route)}"></script>
+</head><body>${route} page v1</body></html>`;
+}
+
 function setup(routes: Record<string, () => Response | Promise<Response>> = {}) {
   const defaults: Record<string, () => Response> = {
     "/": () => html(SHELL_HTML),
@@ -89,6 +103,10 @@ function setup(routes: Record<string, () => Response | Promise<Response>> = {}) 
     "/_next/static/css/app.css": () => new Response("css"),
     "/_next/static/chunks/main.js": () => new Response("js"),
   };
+  for (const route of FEATURE_ROUTES) {
+    defaults[route] = () => html(pageHtml(route));
+    defaults[pageChunk(route)] = () => new Response(`${route} js`);
+  }
   const table = { ...defaults, ...routes };
   let online = true;
 
@@ -174,7 +192,7 @@ describe("service worker", () => {
       const sw = setup();
       await sw.lifecycle("install");
 
-      const shell = sw.caches.stores.get("dm-friend-shell-v1")!;
+      const shell = sw.caches.stores.get("dm-friend-shell-v2")!;
       expect([...shell.entries.keys()].map((key) => new URL(key).pathname)).toEqual(
         expect.arrayContaining([
           "/",
@@ -184,6 +202,56 @@ describe("service worker", () => {
         ]),
       );
       expect(sw.self.skipWaiting).toHaveBeenCalled();
+    });
+
+    it("precaches every top-level route and the page chunks each one references", async () => {
+      const sw = setup();
+      await sw.lifecycle("install");
+
+      const cached = [...sw.caches.stores.get("dm-friend-shell-v2")!.entries.keys()].map(
+        (key) => new URL(key).pathname,
+      );
+      expect(cached).toEqual(
+        expect.arrayContaining([...FEATURE_ROUTES, ...FEATURE_ROUTES.map(pageChunk)]),
+      );
+      // Shared chunks are fetched once, not once per route.
+      const mainFetches = sw.fetch.mock.calls.filter(
+        ([request]) => keyOf(request).endsWith("/_next/static/chunks/main.js"),
+      );
+      expect(mainFetches).toHaveLength(1);
+    });
+
+    it("rejects when a required route (the roster) or one of its assets fails", async () => {
+      const page = setup({ "/roster": () => new Response("", { status: 500 }) });
+      await expect(page.lifecycle("install")).rejects.toThrow();
+      expect(page.self.skipWaiting).not.toHaveBeenCalled();
+
+      const chunk = setup({ [pageChunk("/roster")]: () => new Response("", { status: 500 }) });
+      await expect(chunk.lifecycle("install")).rejects.toThrow();
+      expect(chunk.self.skipWaiting).not.toHaveBeenCalled();
+    });
+
+    it("skips a best-effort route whose page or assets fail, without failing install", async () => {
+      const sw = setup({
+        "/monsters": () => new Response("", { status: 503 }),
+        [pageChunk("/chat")]: () => {
+          throw new TypeError("Failed to fetch");
+        },
+      });
+      await sw.lifecycle("install");
+      expect(sw.self.skipWaiting).toHaveBeenCalled();
+
+      const shell = sw.caches.stores.get("dm-friend-shell-v2")!;
+      const has = (path: string) => shell.entries.has(new URL(path, ORIGIN).href);
+      expect(has("/monsters")).toBe(false);
+      // The chat page is never stored without its chunk.
+      expect(has("/chat")).toBe(false);
+      expect(has("/scan")).toBe(true);
+      expect(has("/roster")).toBe(true);
+
+      // Offline, a skipped route still boots from the home shell.
+      sw.setOnline(false);
+      expect(await (await sw.navigate("/chat"))!.text()).toContain("shell v1");
     });
 
     it("rejects when a required static asset fails to cache", async () => {
@@ -219,8 +287,8 @@ describe("service worker", () => {
   describe("activate", () => {
     it("deletes only stale dm-friend-* caches and leaves unrelated caches intact", async () => {
       const sw = setup();
-      await sw.caches.open("dm-friend-shell-v0");
-      await sw.caches.open("dm-friend-runtime-v0");
+      await sw.caches.open("dm-friend-shell-v1");
+      await sw.caches.open("dm-friend-runtime-v1");
       await sw.caches.open("campaign-notes");
       await sw.caches.open("some-other-lib-cache");
 
@@ -229,7 +297,7 @@ describe("service worker", () => {
 
       expect((await sw.caches.keys()).sort()).toEqual([
         "campaign-notes",
-        "dm-friend-shell-v1",
+        "dm-friend-shell-v2",
         "some-other-lib-cache",
       ]);
       expect(sw.self.clients.claim).toHaveBeenCalled();
@@ -264,6 +332,32 @@ describe("service worker", () => {
       await sw.navigate("/");
       sw.setOnline(false);
       expect(await (await sw.navigate("/encounters"))!.text()).toContain("shell v2");
+    });
+
+    it.each(["/", ...FEATURE_ROUTES])(
+      "opens %s from the precached shell on a cold offline launch",
+      async (route) => {
+        const sw = setup();
+        await sw.lifecycle("install");
+        await sw.lifecycle("activate");
+
+        sw.setOnline(false);
+        const page = await sw.navigate(route);
+        expect(await page!.text()).toContain(route === "/" ? "shell v1" : `${route} page v1`);
+        const chunk = await sw.dispatchFetch(route === "/" ? "/_next/static/chunks/main.js" : pageChunk(route));
+        expect(chunk!.ok).toBe(true);
+      },
+    );
+
+    it("prefers a newer runtime copy of a precached route offline", async () => {
+      const sw = setup();
+      await sw.lifecycle("install");
+
+      sw.table["/roster"] = () => html("<html><body>/roster page v2</body></html>");
+      await sw.navigate("/roster");
+
+      sw.setOnline(false);
+      expect(await (await sw.navigate("/roster"))!.text()).toContain("/roster page v2");
     });
 
     it("prefers the cached page for the exact route offline", async () => {
@@ -319,8 +413,20 @@ describe("service worker", () => {
 
       expect(await sw.dispatchFetch(path, init)).toBeNull();
       expect(sw.fetch).not.toHaveBeenCalled();
-      const runtime = sw.caches.stores.get("dm-friend-runtime-v1");
+      const runtime = sw.caches.stores.get("dm-friend-runtime-v2");
       expect(runtime?.entries.size ?? 0).toBe(0);
+    });
+
+    it("leaves offline /api/ requests to fail fast in the page instead of serving a cache", async () => {
+      const sw = setup({ "/api/monsters": () => new Response("[]") });
+      await sw.lifecycle("install");
+      await sw.dispatchFetch("/api/monsters");
+
+      sw.setOnline(false);
+      expect(await sw.dispatchFetch("/api/monsters")).toBeNull();
+      for (const cache of sw.caches.stores.values()) {
+        expect([...cache.entries.keys()].some((key) => key.includes("/api/"))).toBe(false);
+      }
     });
   });
 });

@@ -3,9 +3,11 @@
 import { useEffect, useId, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 
 import { MonsterStatBlock } from "@/components/monster-stat-block";
+import { OfflineNotice } from "@/components/offline-status";
 import { setLastViewedMonster } from "@/lib/chat/last-monster";
 import { fetchMonsterDetail, fetchMonsterSearch } from "@/lib/monsters/client";
 import type { MonsterStatBlock as MonsterStatBlockData, MonsterSummary } from "@/lib/monsters/types";
+import { isOnline, useOnlineStatus, useOnReconnect } from "@/lib/pwa/online-status";
 
 export const SEARCH_DEBOUNCE_MS = 300;
 
@@ -19,11 +21,15 @@ type SearchState =
   | { status: "idle" }
   | { status: "loading"; query: string }
   | { status: "done"; query: string; results: MonsterSummary[] }
-  | { status: "error"; message: string };
+  | { status: "error"; message: string }
+  /** Asked for while offline; runs on reconnect. */
+  | { status: "offline"; query: string };
 
 type DetailState =
   | { status: "idle" }
   | { status: "loading"; slug: string; name: string }
+  /** Selected while offline; loads on reconnect. */
+  | { status: "offline"; slug: string; name: string }
   | { status: "loaded"; monster: MonsterStatBlockData }
   | { status: "error"; slug: string; name: string; message: string };
 
@@ -42,6 +48,8 @@ function searchStatusText(search: SearchState): string {
       if (count === 0) return `No monsters found for “${search.query}”.`;
       return `${count} ${count === 1 ? "monster" : "monsters"} found.`;
     }
+    case "offline":
+      return `Waiting for a connection to search for “${search.query}”.`;
     default:
       return "";
   }
@@ -50,11 +58,15 @@ function searchStatusText(search: SearchState): string {
 /*
  * Flow: typing schedules a debounced search (Enter searches immediately); each
  * new search aborts the previous request. Selecting a result fetches its full
- * stat block, aborting any in-flight detail request.
+ * stat block, aborting any in-flight detail request. Offline, neither request
+ * is sent: the search/selection is parked and replayed when the browser comes
+ * back online, while already-loaded results and stat blocks stay readable.
  */
 export function MonsterSearch({ fetchImpl, debounceMs = SEARCH_DEBOUNCE_MS }: MonsterSearchProps) {
   const inputId = useId();
   const hintId = useId();
+  const offlineId = useId();
+  const online = useOnlineStatus();
   const resultsHeadingId = useId();
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState<SearchState>({ status: "idle" });
@@ -79,6 +91,10 @@ export function MonsterSearch({ fetchImpl, debounceMs = SEARCH_DEBOUNCE_MS }: Mo
 
   async function runSearch(term: string) {
     cancelPendingSearch();
+    if (!isOnline()) {
+      setSearch({ status: "offline", query: term });
+      return;
+    }
     const controller = new AbortController();
     searchController.current = controller;
     setSearch({ status: "loading", query: term });
@@ -115,6 +131,10 @@ export function MonsterSearch({ fetchImpl, debounceMs = SEARCH_DEBOUNCE_MS }: Mo
 
   async function selectMonster(summary: Pick<MonsterSummary, "slug" | "name">) {
     detailController.current?.abort();
+    if (!isOnline()) {
+      setDetail({ status: "offline", slug: summary.slug, name: summary.name });
+      return;
+    }
     const controller = new AbortController();
     detailController.current = controller;
     setDetail({ status: "loading", slug: summary.slug, name: summary.name });
@@ -133,12 +153,24 @@ export function MonsterSearch({ fetchImpl, debounceMs = SEARCH_DEBOUNCE_MS }: Mo
     }
   }
 
+  useOnReconnect(() => {
+    // Replay against the current input, which may have changed while offline.
+    const term = query.trim();
+    if (search.status === "offline" && term) void runSearch(term);
+    if (detail.status === "offline") void selectMonster(detail);
+  });
+
   const selectedSlug =
     detail.status === "loaded" ? detail.monster.slug : detail.status === "idle" ? null : detail.slug;
   const results = search.status === "done" ? search.results : [];
 
   return (
     <div className="monster-search">
+      {!online && (
+        <OfflineNotice id={offlineId}>
+          Monster lookup needs a connection. Your search will run when you&apos;re back online.
+        </OfflineNotice>
+      )}
       <form role="search" className="monster-search__form" onSubmit={handleSubmit}>
         <label htmlFor={inputId} className="monster-search__label">
           Search monsters
@@ -151,7 +183,7 @@ export function MonsterSearch({ fetchImpl, debounceMs = SEARCH_DEBOUNCE_MS }: Mo
           onChange={handleChange}
           autoComplete="off"
           spellCheck={false}
-          aria-describedby={hintId}
+          aria-describedby={online ? hintId : `${hintId} ${offlineId}`}
         />
         <p id={hintId} className="monster-search__hint">
           Search the SRD by monster name, e.g. “goblin” or “dragon”.
@@ -194,7 +226,11 @@ export function MonsterSearch({ fetchImpl, debounceMs = SEARCH_DEBOUNCE_MS }: Mo
 
       <div className="monster-search__detail">
         <p role="status" aria-live="polite" className="monster-search__detail-status">
-          {detail.status === "loading" ? `Loading ${detail.name}…` : ""}
+          {detail.status === "loading"
+            ? `Loading ${detail.name}…`
+            : detail.status === "offline"
+              ? `Waiting for a connection to load ${detail.name}.`
+              : ""}
         </p>
         {detail.status === "error" && (
           <div role="alert" className="monster-search__error">

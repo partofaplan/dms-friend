@@ -10,6 +10,7 @@ import {
   type KeyboardEvent,
 } from "react";
 
+import { OfflineNotice } from "@/components/offline-status";
 import type { ChatMessage } from "@/lib/ai/contracts";
 import {
   assembleChatMessages,
@@ -21,6 +22,7 @@ import { useLastViewedMonster } from "@/lib/chat/last-monster";
 import { CHAT_ERROR_MESSAGES, streamChat, type ChatErrorKind } from "@/lib/chat/stream-client";
 import { repository as defaultRepository, type Character, type Repository } from "@/lib/db";
 import type { MonsterStatBlock } from "@/lib/monsters/types";
+import { useOnlineStatus } from "@/lib/pwa/online-status";
 
 export type ChatScreenProps = {
   /** Injectable for tests; defaults to the app-wide IndexedDB repository. */
@@ -54,11 +56,15 @@ function historyFrom(turns: readonly Turn[]): HistoryMessage[] {
  * or unmounting aborts it. Each request carries a fresh system context built
  * from the party roster and the last-viewed monster, plus prior answered turns.
  * The log is a polite live region marked aria-busy while streaming, so screen
- * readers announce the finished answer rather than every delta.
+ * readers announce the finished answer rather than every delta. Offline,
+ * Send and Retry are disabled with an explanation; drafting still works and
+ * the controls return as soon as the browser is back online.
  */
 export function ChatScreen({ repo = defaultRepository, fetchImpl }: ChatScreenProps) {
   const inputId = useId();
   const hintId = useId();
+  const offlineId = useId();
+  const online = useOnlineStatus();
   const lastMonster = useLastViewedMonster();
   const [party, setParty] = useState<Character[] | null>(null);
   const [partyError, setPartyError] = useState(false);
@@ -88,7 +94,7 @@ export function ChatScreen({ repo = defaultRepository, fetchImpl }: ChatScreenPr
 
   const streaming = turns.some((turn) => turn.status === "streaming");
   const question = draft.trim();
-  const canSend = party !== null && !streaming && question.length > 0;
+  const canSend = online && party !== null && !streaming && question.length > 0;
 
   function updateTurn(id: string, change: (turn: Turn) => Turn) {
     setTurns((all) => all.map((turn) => (turn.id === id ? change(turn) : turn)));
@@ -165,7 +171,7 @@ export function ChatScreen({ repo = defaultRepository, fetchImpl }: ChatScreenPr
   }
 
   function retry(turn: Turn) {
-    if (streaming) return;
+    if (streaming || !online) return;
     const index = turns.findIndex((t) => t.id === turn.id);
     updateTurn(turn.id, (t) => ({ ...t, answer: "", status: "streaming", error: undefined }));
     void answer(turn, turns.slice(0, index));
@@ -199,6 +205,12 @@ export function ChatScreen({ repo = defaultRepository, fetchImpl }: ChatScreenPr
   return (
     <div className="chat-screen">
       <p className="chat-screen__context">{contextNote}</p>
+      {!online && (
+        <OfflineNotice id={offlineId}>
+          The assistant needs a connection. You can keep typing; Send comes back when you&apos;re
+          online.
+        </OfflineNotice>
+      )}
       {partyError && (
         <p role="alert" className="chat-screen__error">
           Couldn&apos;t load the party, so answers won&apos;t include it.
@@ -244,7 +256,7 @@ export function ChatScreen({ repo = defaultRepository, fetchImpl }: ChatScreenPr
                         type="button"
                         className="chat-message__retry"
                         onClick={() => retry(turn)}
-                        disabled={streaming}
+                        disabled={streaming || !online}
                       >
                         Retry
                       </button>
@@ -274,13 +286,18 @@ export function ChatScreen({ repo = defaultRepository, fetchImpl }: ChatScreenPr
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={handleKeyDown}
-          aria-describedby={hintId}
+          aria-describedby={online ? hintId : `${hintId} ${offlineId}`}
         />
         <p id={hintId} className="chat-input__hint">
           Enter to send, Shift+Enter for a new line.
         </p>
         <div className="chat-input__actions">
-          <button type="submit" className="chat-input__send" disabled={!canSend}>
+          <button
+            type="submit"
+            className="chat-input__send"
+            disabled={!canSend}
+            aria-describedby={online ? undefined : offlineId}
+          >
             Send
           </button>
           <button

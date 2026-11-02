@@ -11,10 +11,12 @@ describe("Home shell", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders navigation entries for each feature", () => {
+  it("renders a landing card for each feature", () => {
     render(<Home />);
 
-    const nav = screen.getByRole("navigation", { name: "Main" });
+    // The bottom nav (in the layout) is the only navigation landmark.
+    expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
+    const nav = screen.getByRole("region", { name: "At your fingertips" });
     for (const [label, href] of [
       ["Roster", "/roster"],
       ["Monsters", "/monsters"],
