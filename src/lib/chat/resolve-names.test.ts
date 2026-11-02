@@ -178,8 +178,13 @@ describe("resolveReferences", () => {
       expect(resolveReferences("will the door open?", { party: [will, willTurner] })).toEqual([]);
     });
 
-    it("does not take a capitalized common word opening a question as a name", () => {
+    it("does not take a capitalized common word opening a sentence or clause as a name", () => {
+      const may = character({ name: "May" });
       expect(resolveReferences("Will the door open?", { party: [will] })).toEqual([]);
+      expect(resolveReferences("Will the door open", { party: [will] })).toEqual([]);
+      expect(resolveReferences("May I cast twice", { party: [may] })).toEqual([]);
+      expect(resolveReferences("Okay, Will the door open?", { party: [will] })).toEqual([]);
+      expect(resolveReferences("Will attacks the goblin", { party: [will] })).toEqual([]);
       expect(resolveReferences("Thorin hits. Will it hold?", { party: [thorin, will] }).map((r) => r.name)).toEqual([
         "Thorin Oakenshield",
       ]);
@@ -190,12 +195,13 @@ describe("resolveReferences", () => {
       expect(names(resolveReferences("Can The Bard heal?", { party: [theBard] }))).toEqual(["The Bard"]);
       expect(names(resolveReferences("Can the Bard heal?", { party: [theBard] }))).toEqual(["The Bard"]);
       expect(names(resolveReferences("Does Will see it?", { party: [will] }))).toEqual(["Will"]);
+      expect(names(resolveReferences("heal Will now", { party: [will] }))).toEqual(["Will"]);
     });
 
-    it("resolves a sentence-opening common word that is addressed or not a question", () => {
+    it("resolves a capitalized common word addressed with a comma at the start of a clause", () => {
       expect(names(resolveReferences("Bard, make a persuasion check", { party: [bard] }))).toEqual(["Bard"]);
-      expect(names(resolveReferences("Will attacks the goblin", { party: [will] }))).toEqual(["Will"]);
       expect(names(resolveReferences("Ok. Will, can you dodge?", { party: [will] }))).toEqual(["Will"]);
+      expect(resolveReferences("bard, make a check", { party: [bard] })).toEqual([]);
     });
 
     it("resolves a possessive, even lowercase", () => {
@@ -208,7 +214,8 @@ describe("resolveReferences", () => {
       expect(names(resolveReferences("will turner swings", { party: [willTurner] }))).toEqual(["Will Turner"]);
       expect(resolveReferences("will turner swings", { party: [willTurner] })[0].matched).toBe("Will Turner");
       expect(resolveReferences("will it work?", { party: [willTurner] })).toEqual([]);
-      expect(resolveReferences("Will attacks", { party: [willTurner] })[0]).toMatchObject({
+      expect(resolveReferences("Will attacks", { party: [willTurner] })).toEqual([]);
+      expect(resolveReferences("heal Will now", { party: [willTurner] })[0]).toMatchObject({
         name: "Will Turner",
         matched: "Will",
       });
@@ -239,6 +246,8 @@ describe("resolveReferences", () => {
       expect(resolveReferences("a big b and anything else", { party })).toEqual([]);
       expect(names(resolveReferences("Can C++ Wizard cast?", { party }))).toEqual(["C++ Wizard"]);
       expect(resolveReferences("can a wizard cast in armor?", { party })).toEqual([]);
+      // Punctuation inside a name is not significant (documented limitation).
+      expect(names(resolveReferences("does a b see it?", { party }))).toEqual(["a.*b"]);
     });
 
     it("bounds a huge stored name before processing it", () => {

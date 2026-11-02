@@ -25,11 +25,17 @@ import {
  * fuzzier is left to the model, which sees the whole party and stable. Pure.
  *
  * A character name made only of everyday words ("Will", "The Bard") is prose
- * unless the message marks it as a name: a possessive ("Will's sword"), or a
- * capitalized common word ("Bard") that is mid-sentence, or that starts a
- * sentence which is addressed ("Bard, ...") or not a question ("Will attacks").
- * So "can a bard heal?" and "Will the door open?" pin nobody. A full name with
- * any uncommon word ("Will Turner") matches as usual.
+ * unless the message marks it as a name: a possessive ("Will's sword"), a
+ * capitalized common word mid-sentence ("How is Bard doing"), or a capitalized
+ * one addressed at the start of a clause ("Bard, make a check"). A bare one
+ * opening a sentence ("Will attacks", "May I cast twice") is not pinned — it is
+ * usually a verb there, and the model still sees the whole party. So "can a
+ * bard heal?" and "Will the door open" pin nobody. A full name with any
+ * uncommon word ("Will Turner") matches as usual.
+ *
+ * Names and messages compare as sequences of letter/digit words, so
+ * punctuation inside a name is not significant: "C++ Wizard" also matches
+ * "C Wizard", and "a.*b" matches "a b".
  */
 
 /** Entities pinned for one message, in the order the message first names them. */
@@ -147,28 +153,22 @@ const isTitleCase = (text: string) => /^\p{Lu}/u.test(text) && text !== text.toU
 /**
  * Whether the words at [start, start + length) are marked as a name rather
  * than prose: followed by a possessive "'s", or containing a capitalized
- * common word that is mid-sentence, or that opens a sentence which addresses
- * it ("Bard, ...") or is not a question ("Will attacks." vs "Will it hold?").
+ * common word that is mid-clause ("How is Bard doing"), or opening a clause
+ * capitalized and directly addressed ("Bard, ..."). A capitalized word that
+ * opens a sentence or follows a comma ("Will the door open", "Okay, Will it
+ * hold") is no signal: there it is usually a verb, with or without a "?".
  */
 function nameSignals(normalized: string, words: readonly NameWord[]) {
   const gapAfter = (k: number) => normalized.slice(words[k].end, words[k + 1]?.start ?? normalized.length);
-  // Whether the sentence each word sits in ends with "?" (one backward pass).
-  const question: boolean[] = [];
-  let inQuestion = false;
-  for (let k = words.length - 1; k >= 0; k -= 1) {
-    const end = gapAfter(k).match(/[.!?]/);
-    if (end) inQuestion = end[0] === "?";
-    question[k] = inQuestion;
-  }
-  const opensSentence = (k: number) => k === 0 || /[.!?:;\n]/.test(gapAfter(k - 1));
+  const opensClause = (k: number) => k === 0 || /[.!?:;,\n"“(]/.test(gapAfter(k - 1));
+  const capitalized = (k: number) => isCommonWordName(words[k].token) && isTitleCase(words[k].text);
 
   return (start: number, length: number): boolean => {
     const last = start + length - 1;
     if (words[last + 1]?.token === "s" && /^['’]$/.test(gapAfter(last))) return true;
+    if (capitalized(start) && opensClause(start) && /^\s*,/.test(gapAfter(last))) return true;
     for (let k = start; k <= last; k += 1) {
-      const word = words[k];
-      if (!isCommonWordName(word.token) || !isTitleCase(word.text)) continue;
-      if (!opensSentence(k) || gapAfter(k).trimStart().startsWith(",") || !question[k]) return true;
+      if (capitalized(k) && !opensClause(k)) return true;
     }
     return false;
   };
