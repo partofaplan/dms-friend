@@ -1,7 +1,7 @@
-import { renderPlaceholderIcon } from "@/lib/pwa/placeholder-icon";
+import { renderAppIcon } from "@/lib/pwa/app-icon";
 
 export const dynamic = "force-static";
 
 export function GET() {
-  return renderPlaceholderIcon(512);
+  return renderAppIcon(512);
 }

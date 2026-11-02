@@ -1,10 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" fill="#101820"/>
-  <circle cx="256" cy="256" r="196" fill="#19242e"/>
-  <g stroke="#d8b77a" stroke-width="9" stroke-linejoin="round">
-    <path d="m256 94 142 82v160l-142 82-142-82V176L256 94Z" fill="#24333f"/>
-    <path d="m256 94-82 230h164L256 94Z" fill="#19242e"/>
-    <path d="m114 176 60 148-60 12m284-160-60 148 60 12M174 324l82 94 82-94M114 176h284" fill="none"/>
-  </g>
-  <path d="m256 221 8 21 22 8-22 8-8 21-8-21-22-8 22-8Z" fill="#f2ede3"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><rect width="512" height="512" fill="#1c1511"/><path d="M164 72v54m184-54v54" stroke="#a58450" stroke-width="14"/><path d="M256 107c-54 0-67 30-116 30H86v241h54c49 0 62 27 116 27s67-27 116-27h54V137h-54c-49 0-62-30-116-30Z" fill="#38291e" stroke="#e6bc75" stroke-width="8"/><path d="m256 160 83 48v96l-83 48-83-48v-96Z" fill="#211812" stroke="#e6bc75" stroke-width="7" stroke-linejoin="round"/><path d="m256 160-48 128h96l-48-128Zm-83 48 35 80-35 16m166-96-35 80 35 16m-131-16 48 64 48-64" fill="none" stroke="#e6bc75" stroke-width="6" stroke-linejoin="round"/><path d="m256 229 7 18 19 7-19 7-7 18-7-18-19-7 19-7Z" fill="#f5ead5"/><g fill="#e6bc75"><circle cx="109" cy="161" r="5"/><circle cx="403" cy="161" r="5"/><circle cx="109" cy="354" r="5"/><circle cx="403" cy="354" r="5"/></g></svg>
