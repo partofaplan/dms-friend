@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { NavIcon } from "@/components/nav-icon";
 import { NAV_ITEMS } from "@/components/nav-items";
+import { ProfileIntroNudge } from "@/components/profile-intro-nudge";
 import { APP_NAME } from "@/lib/pwa/constants";
 
 export default function Home() {
@@ -27,6 +28,8 @@ export default function Home() {
         <h1>{APP_NAME}</h1>
         <p>Your story. Your table.<br />A little help behind the screen.</p>
       </header>
+
+      <ProfileIntroNudge />
 
       {/* A landing grid, not a second nav landmark: the bottom nav is the primary navigation. */}
       <section className="toolkit" aria-labelledby="toolkit-title">

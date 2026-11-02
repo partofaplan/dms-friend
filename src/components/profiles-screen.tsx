@@ -27,6 +27,7 @@ import {
   setActiveUser,
   useActiveProfile,
 } from "@/lib/profiles/active-profile";
+import { markProfileIntroSeen } from "@/lib/profiles/profile-intro";
 
 export type ProfilesScreenProps = {
   /** Injectable for tests; defaults to the app-wide IndexedDB repository. */
@@ -222,6 +223,8 @@ export function ProfilesScreen({
                   onRename={(name) =>
                     run(async () => {
                       await repo.users.rename(user.id, name);
+                      // Naming a profile completes the first-run intro for good.
+                      markProfileIntroSeen();
                       return `Renamed to ${name.trim()}.`;
                     }, `Could not rename ${user.name}.`)
                   }
@@ -290,6 +293,11 @@ export function ProfilesScreen({
             <p className="profiles__loading" role="status">
               Loading parties…
             </p>
+          ) : parties.length === 0 ? (
+            <div className="profiles__empty">
+              <p>No campaigns yet.</p>
+              <p>Create a party below to start tracking a campaign.</p>
+            </div>
           ) : (
             <ul className="profiles__list" aria-label={`${activeUser.name}'s parties`}>
               {parties.map((party) => {
