@@ -3,7 +3,7 @@ import type { Metadata, Viewport } from "next";
 import { BottomNav } from "@/components/bottom-nav";
 import { OfflineBanner } from "@/components/offline-status";
 import { ServiceWorkerRegistration } from "@/components/service-worker-registration";
-import { APP_DESCRIPTION, APP_NAME } from "@/lib/pwa/constants";
+import { APP_DESCRIPTION, APP_NAME, THEME_COLOR } from "@/lib/pwa/constants";
 
 import "./globals.css";
 
@@ -26,7 +26,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#1c1511",
+  themeColor: THEME_COLOR,
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
