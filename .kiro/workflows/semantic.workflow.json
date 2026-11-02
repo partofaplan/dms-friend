@@ -1,0 +1,15 @@
+{
+  "name": "semantic",
+  "description": "Describe what this workflow does.",
+  "inputs": {
+    "task": "prompt"
+  },
+  "steps": [
+    {
+      "type": "step",
+      "id": "main",
+      "agent": "wf-coder",
+      "prompt": "{{task}}"
+    }
+  ]
+}

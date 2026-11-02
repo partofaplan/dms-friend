@@ -1,0 +1,4 @@
+rules:
+  # Shell: the tools this build drives, plus read-only verification helpers.
+  - capability: all
+    effect: allow
