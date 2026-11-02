@@ -162,5 +162,95 @@ describe("resolveReferences", () => {
   it("returns nothing for an empty roster or a message with no names", () => {
     expect(resolveReferences("Thorin?", { party: [] })).toEqual([]);
     expect(resolveReferences("How does grappling work?", { party: [thorin, ilsa], combatants: [combatant()] })).toEqual([]);
+    expect(resolveReferences("", { party: [thorin, ilsa] })).toEqual([]);
+    expect(resolveReferences("   \n\t ", { party: [thorin, ilsa] })).toEqual([]);
+  });
+
+  describe("common-word names", () => {
+    const bard = character({ name: "Bard" });
+    const theBard = character({ name: "The Bard" });
+    const will = character({ name: "Will" });
+    const willTurner = character({ name: "Will Turner" });
+
+    it("treats a lowercase common word as prose, not a character", () => {
+      expect(resolveReferences("Can a bard heal?", { party: [bard, thorin] })).toEqual([]);
+      expect(resolveReferences("Can the bard heal?", { party: [theBard] })).toEqual([]);
+      expect(resolveReferences("will the door open?", { party: [will, willTurner] })).toEqual([]);
+    });
+
+    it("does not take a capitalized common word opening a question as a name", () => {
+      expect(resolveReferences("Will the door open?", { party: [will] })).toEqual([]);
+      expect(resolveReferences("Thorin hits. Will it hold?", { party: [thorin, will] }).map((r) => r.name)).toEqual([
+        "Thorin Oakenshield",
+      ]);
+    });
+
+    it("resolves a capitalized mid-sentence common word as a name", () => {
+      expect(names(resolveReferences("How is Bard doing?", { party: [bard] }))).toEqual(["Bard"]);
+      expect(names(resolveReferences("Can The Bard heal?", { party: [theBard] }))).toEqual(["The Bard"]);
+      expect(names(resolveReferences("Can the Bard heal?", { party: [theBard] }))).toEqual(["The Bard"]);
+      expect(names(resolveReferences("Does Will see it?", { party: [will] }))).toEqual(["Will"]);
+    });
+
+    it("resolves a sentence-opening common word that is addressed or not a question", () => {
+      expect(names(resolveReferences("Bard, make a persuasion check", { party: [bard] }))).toEqual(["Bard"]);
+      expect(names(resolveReferences("Will attacks the goblin", { party: [will] }))).toEqual(["Will"]);
+      expect(names(resolveReferences("Ok. Will, can you dodge?", { party: [will] }))).toEqual(["Will"]);
+    });
+
+    it("resolves a possessive, even lowercase", () => {
+      expect(names(resolveReferences("what is bard's hp?", { party: [bard] }))).toEqual(["Bard"]);
+      expect(names(resolveReferences("roll for will’s sword", { party: [will] }))).toEqual(["Will"]);
+    });
+
+    it("never blanket-excludes a name: full names and first names with a signal match", () => {
+      expect(nameHandle("Will Turner")).toBe("Will");
+      expect(names(resolveReferences("will turner swings", { party: [willTurner] }))).toEqual(["Will Turner"]);
+      expect(resolveReferences("will turner swings", { party: [willTurner] })[0].matched).toBe("Will Turner");
+      expect(resolveReferences("will it work?", { party: [willTurner] })).toEqual([]);
+      expect(resolveReferences("Will attacks", { party: [willTurner] })[0]).toMatchObject({
+        name: "Will Turner",
+        matched: "Will",
+      });
+    });
+
+    it("ignores all-caps text as a name signal", () => {
+      expect(resolveReferences("CAN A BARD HEAL", { party: [bard] })).toEqual([]);
+    });
+
+    it("keeps matching uncommon first names in ordinary prose", () => {
+      expect(names(resolveReferences("can thorin heal?", { party: [thorin, bard] }))).toEqual(["Thorin Oakenshield"]);
+    });
+
+    it("keeps matching combatants by common monster names, without the character", () => {
+      const mage = combatant({ monster: { ...goblinMonster, name: "Mage" } });
+      const pcMage = character({ name: "Mage" });
+      const refs = resolveReferences("can the mage counterspell?", { party: [pcMage], combatants: [mage] });
+      expect(refs).toEqual([expect.objectContaining({ kind: "combatant", id: mage.id, ambiguous: false })]);
+    });
+  });
+
+  describe("unusual names", () => {
+    it("matches regex-metacharacter names literally, without over-matching", () => {
+      const star = character({ name: "a.*b" });
+      const wizard = character({ name: "C++ Wizard" });
+      const party = [star, wizard];
+      expect(names(resolveReferences("does a.*b see it?", { party }))).toEqual(["a.*b"]);
+      expect(resolveReferences("a big b and anything else", { party })).toEqual([]);
+      expect(names(resolveReferences("Can C++ Wizard cast?", { party }))).toEqual(["C++ Wizard"]);
+      expect(resolveReferences("can a wizard cast in armor?", { party })).toEqual([]);
+    });
+
+    it("bounds a huge stored name before processing it", () => {
+      const huge = character({ name: `${"Zed ".repeat(50)}Tail`.padEnd(10_000, "x") });
+      expect(nameHandle(huge.name)).toBe("Zed");
+      const start = performance.now();
+      const refs = resolveReferences("Zed attacks", { party: [huge] });
+      expect(performance.now() - start).toBeLessThan(500);
+      expect(refs).toHaveLength(1);
+      expect(refs[0].name.length).toBeLessThanOrEqual(60);
+      // The tail beyond the cap is never part of the matchable name.
+      expect(resolveReferences("Tail", { party: [huge] })).toEqual([]);
+    });
   });
 });
