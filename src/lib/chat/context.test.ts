@@ -21,7 +21,7 @@ import {
   MAX_SYSTEM_CONTEXT_LENGTH,
   type HistoryMessage,
 } from "./context";
-import { MAX_RESOLVED_REFERENCES, resolveReferences } from "./resolve-names";
+import { buildMentionables, MAX_PINNED_MENTIONS, pinMentions } from "./mentions";
 
 function character(overrides: Partial<CharacterInput> = {}): Character {
   return characterSchema.parse({
@@ -167,28 +167,32 @@ describe("buildSystemContext with combat and references", () => {
     expect(context).toContain("- Thorin (Thorin Oakenshield) — Dwarf Fighter 5; AC 18; HP 9/44");
   });
 
-  it("pins the entities the message names, before the party", () => {
+  /** The references for `text`, as the chat pins them from its @mentions. */
+  const tagged = (text: string, party: readonly Character[], stable: readonly Combatant[] = []) =>
+    pinMentions(text, [], buildMentionables(party, stable));
+
+  it("pins the explicitly tagged entities, before the party", () => {
     const stable = [combatant({ label: "Goblin 2", hitPoints: { max: 7, current: 3 } })];
     const party = [thorin];
-    const references = resolveReferences("Can Thorin reach goblin 2?", { party, combatants: stable });
+    const references = tagged("Can @Thorin Oakenshield reach @goblin 2?", party, stable);
     const context = buildSystemContext({ party, combatants: stable, references });
     expect(context).toContain(
       [
-        "Referenced now (who the DM's latest message names):",
+        "Referenced now (who the DM's latest message tags):",
         "- (party) Thorin (Thorin Oakenshield) — Dwarf Fighter 5; AC 18; HP 9/44",
         "- (combat) Goblin 2 (Goblin, CR 1/4) — AC 15; HP 3/7",
       ].join("\n"),
     );
+    expect(context).toContain('"@Name" in a message is such a tag');
     expect(context.indexOf("Referenced now")).toBeLessThan(context.indexOf("Party (1):"));
     expect(buildSystemContext({ party })).not.toContain("Referenced now (");
   });
 
-  it("tells the model when a reference is ambiguous", () => {
-    const party = [thorin, character({ name: "Thorin Stonefist" })];
-    const references = resolveReferences("Thorin attacks", { party });
-    const context = buildSystemContext({ party, references });
-    expect(context).toContain('[ambiguous: "Thorin" could also be Thorin Stonefist]');
-    expect(context).toContain('[ambiguous: "Thorin" could also be Thorin Oakenshield]');
+  it("references nothing unless told: untagged names in prose aren't pinned", () => {
+    const party = [thorin, character({ name: "Bard", className: "Bard" })];
+    const references = tagged("Can a bard heal Thorin?", party);
+    expect(references).toEqual([]);
+    expect(buildSystemContext({ party, references })).not.toContain("Referenced now (");
   });
 
   it("stays within the cap with a huge party, stable, and references, keeping the priority sections", () => {
@@ -204,11 +208,14 @@ describe("buildSystemContext with combat and references", () => {
     const stable = Array.from({ length: 100 }, (_, i) =>
       combatant({ label: `${"L".repeat(300)} ${i}`, conditions: ["blinded", "charmed", "deafened"] }),
     );
-    const references = resolveReferences("Hero39, Hero1, Hero2, Hero3, Hero4, Hero5 and the goblin", {
+    // Long names are tagged by their capped tokens.
+    const tokens = buildMentionables(party, stable).map((m) => m.token);
+    const references = tagged(
+      [39, 1, 2, 3, 4, 5, 6].map((i) => `@${tokens[i]}`).join(", "),
       party,
-      combatants: stable,
-    });
-    expect(references).toHaveLength(MAX_RESOLVED_REFERENCES);
+      stable,
+    );
+    expect(references).toHaveLength(MAX_PINNED_MENTIONS);
 
     const context = buildSystemContext({
       party,
@@ -237,7 +244,7 @@ describe("buildSystemContext with combat and references", () => {
     const context = buildSystemContext({
       party: [thorin],
       combatants: [combatant()],
-      references: resolveReferences("Thorin", { party: [thorin] }),
+      references: tagged("@Thorin Oakenshield", [thorin]),
       lastMonster: goblin,
     });
     expect(context).toContain("Referenced now (");

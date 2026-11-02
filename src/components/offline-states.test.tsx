@@ -203,7 +203,8 @@ describe("offline", () => {
     render(<ChatScreen repo={repo} fetchImpl={fetchMock} />);
     await screen.findByText(/Using: no party/);
 
-    const field = screen.getByRole("textbox", { name: "Ask the assistant" });
+    // The message field is a combobox: it drives the @mention suggestions.
+    const field = screen.getByRole("combobox", { name: "Ask the assistant" });
     fireEvent.change(field, { target: { value: "Can a goblin grapple?" } });
     const send = screen.getByRole("button", { name: "Send" });
     expect(send).toBeDisabled();
