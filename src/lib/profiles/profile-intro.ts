@@ -6,8 +6,10 @@ import { useActiveProfile } from "@/lib/profiles/active-profile";
 /*
  * The first-run "name your profile" nudge. A fresh install lands in the
  * auto-created "Default User" / "Default Party"; until the user dismisses the
- * nudge or renames away from the default, it suggests naming them. Either
- * outcome is remembered in localStorage so it never comes back. Client only.
+ * nudge or renames a user profile, it suggests naming them. Both actions call
+ * markProfileIntroSeen(), remembered in localStorage so the nudge never comes
+ * back, even if the name is later changed back to the default. The hook only
+ * reads that flag; it never sets it as a side effect of rendering. Client only.
  */
 
 export const PROFILE_INTRO_STORAGE_KEY = "dm-friend:has-seen-profile-intro";
@@ -47,23 +49,21 @@ export type ProfileIntro =
  */
 export function useProfileIntro(repo: AppRepository = defaultRepository): ProfileIntro {
   const active = useActiveProfile(repo);
-  // The user whose profile count was checked, and whether they were the only one.
-  const [onlyUser, setOnlyUser] = useState<{ userId: string; only: boolean } | null>(null);
+  // The user that was checked, and whether the nudge applies to them: the only
+  // user, with the intro not yet seen. Storage is read here, in an effect after
+  // mount, never during render.
+  const [check, setCheck] = useState<{ userId: string; eligible: boolean } | null>(null);
   const [dismissed, setDismissed] = useState(false);
   const user = active.user;
   const isDefault = user?.name === DEFAULT_USER_NAME;
 
   useEffect(() => {
-    if (!user || hasSeenProfileIntro()) return;
-    if (!isDefault) {
-      // Renamed away from (or never on) the default: done for good.
-      markProfileIntroSeen();
-      return;
-    }
+    if (!user || !isDefault) return;
     let cancelled = false;
     repo.users.getAll().then(
       (users) => {
-        if (!cancelled) setOnlyUser({ userId: user.id, only: users.length === 1 });
+        if (cancelled) return;
+        setCheck({ userId: user.id, eligible: users.length === 1 && !hasSeenProfileIntro() });
       },
       () => undefined, // Unknown: leave the nudge hidden.
     );
@@ -77,15 +77,13 @@ export function useProfileIntro(repo: AppRepository = defaultRepository): Profil
     setDismissed(true);
   };
 
-  // Storage is only read once the profile is ready (never during SSR or the
-  // hydration render, which both see "loading"), so the markup can't mismatch.
+  // SSR and the hydration render have no check yet, so they render nothing.
   const show =
     active.status === "ready" &&
     isDefault &&
     !dismissed &&
-    onlyUser?.userId === active.user.id &&
-    onlyUser.only &&
-    !hasSeenProfileIntro();
+    check?.userId === active.user.id &&
+    check.eligible;
   if (!show) return { show: false, userName: null, partyName: null, dismiss };
   return { show: true, userName: active.user.name, partyName: active.partyProfile.name, dismiss };
 }

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { DEFAULT_USER_NAME, type DexieRepository } from "@/lib/db";
 import { refreshActiveProfile } from "@/lib/profiles/active-profile";
@@ -7,7 +7,10 @@ import { activateDefaultParty, createTestRepository } from "@/test-utils/reposit
 
 import { ActiveScopeBar } from "./active-scope-bar";
 import { ProfileIntroNudge } from "./profile-intro-nudge";
+import { ProfilesScreen } from "./profiles-screen";
 import { RosterScreen } from "./roster-screen";
+
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 let repo: DexieRepository;
 
@@ -35,6 +38,19 @@ async function renderNudge() {
   return result;
 }
 
+/** Renames a user through the profiles screen (alone, as on /profiles), then unmounts it. */
+async function renameOnProfilesScreen(from: string, to: string) {
+  const { unmount } = render(<ProfilesScreen repo={repo} />);
+  const rename = await screen.findByRole("button", { name: `Rename ${from}` });
+  await waitFor(() => expect(rename).toBeEnabled());
+  fireEvent.click(rename);
+  fireEvent.change(screen.getByLabelText(`New name for ${from}`), { target: { value: to } });
+  fireEvent.click(screen.getByRole("button", { name: "Save name" }));
+  await screen.findByRole("button", { name: `Rename ${to}` });
+  await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(`Renamed to ${to}.`));
+  unmount();
+}
+
 describe("ProfileIntroNudge", () => {
   it("invites a brand-new user to name the auto-created default profile", async () => {
     await renderNudge();
@@ -58,7 +74,7 @@ describe("ProfileIntroNudge", () => {
     expect(nudge()).not.toBeInTheDocument();
   });
 
-  it("goes away for good once the user renames away from the default", async () => {
+  it("hides while the active user has a non-default name", async () => {
     const { user } = await activateDefaultParty(repo);
     await renderNudge();
     expect(nudge()).toBeInTheDocument();
@@ -68,15 +84,26 @@ describe("ProfileIntroNudge", () => {
       await refreshActiveProfile(repo);
     });
     await waitFor(() => expect(nudge()).not.toBeInTheDocument());
-    await waitFor(() => expect(window.localStorage.getItem(PROFILE_INTRO_STORAGE_KEY)).toBe("true"));
+  });
 
-    // Renaming back doesn't bring it back.
-    await act(async () => {
-      await repo.users.rename(user.id, DEFAULT_USER_NAME);
-      await refreshActiveProfile(repo);
-    });
-    await screen.findByText(`User: ${DEFAULT_USER_NAME}`);
-    await act(async () => {});
+  it("goes away for good once the user is renamed on /profiles, where the nudge isn't mounted", async () => {
+    await activateDefaultParty(repo);
+    const home = await renderNudge();
+    expect(nudge()).toBeInTheDocument();
+    home.unmount(); // Navigate to /profiles.
+
+    await renameOnProfilesScreen(DEFAULT_USER_NAME, "Zach");
+    expect(window.localStorage.getItem(PROFILE_INTRO_STORAGE_KEY)).toBe("true");
+
+    await renderNudge(); // Back home.
+    expect(screen.getByText("User: Zach")).toBeInTheDocument();
+    expect(nudge()).not.toBeInTheDocument();
+    cleanup();
+
+    // Renaming back to the default doesn't bring it back.
+    await renameOnProfilesScreen("Zach", DEFAULT_USER_NAME);
+    await renderNudge();
+    expect(screen.getByText(`User: ${DEFAULT_USER_NAME}`)).toBeInTheDocument();
     expect(nudge()).not.toBeInTheDocument();
   });
 

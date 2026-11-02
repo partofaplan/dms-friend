@@ -27,6 +27,7 @@ import {
   setActiveUser,
   useActiveProfile,
 } from "@/lib/profiles/active-profile";
+import { markProfileIntroSeen } from "@/lib/profiles/profile-intro";
 
 export type ProfilesScreenProps = {
   /** Injectable for tests; defaults to the app-wide IndexedDB repository. */
@@ -222,6 +223,8 @@ export function ProfilesScreen({
                   onRename={(name) =>
                     run(async () => {
                       await repo.users.rename(user.id, name);
+                      // Naming a profile completes the first-run intro for good.
+                      markProfileIntroSeen();
                       return `Renamed to ${name.trim()}.`;
                     }, `Could not rename ${user.name}.`)
                   }
