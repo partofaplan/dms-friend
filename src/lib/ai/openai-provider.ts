@@ -5,7 +5,13 @@ import OpenAI, {
   APIError,
   APIUserAbortError,
 } from "openai";
-import type { ChatCompletion, ChatCompletionCreateParamsNonStreaming } from "openai/resources/chat/completions";
+import type {
+  ChatCompletion,
+  ChatCompletionChunk,
+  ChatCompletionCreateParams,
+  ChatCompletionCreateParamsNonStreaming,
+  ChatCompletionCreateParamsStreaming,
+} from "openai/resources/chat/completions";
 import {
   CHARACTER_EXTRACTION_SCHEMA_NAME,
   CHARACTER_EXTRACTION_SYSTEM_PROMPT,
@@ -18,6 +24,7 @@ import type {
   AiProvider,
   ChatRequest,
   ChatResult,
+  ChatStreamChunk,
   ExtractCharacterRequest,
   ExtractCharacterResult,
 } from "./provider";
@@ -28,16 +35,27 @@ export const DEFAULT_OPENAI_TIMEOUT_MS = 60_000;
 const MAX_RETRIES = 1;
 const EXTRACTION_MAX_TOKENS = 2048;
 
+/*
+ * The slice of the SDK client we use. `create` returns a completion for
+ * non-streaming bodies and an async iterable of chunks for `stream: true`;
+ * callers narrow the result with isChunkStream().
+ */
 type ChatCompletionsClient = {
   chat: {
     completions: {
       create(
-        body: ChatCompletionCreateParamsNonStreaming,
+        body: ChatCompletionCreateParams,
         options?: { signal?: AbortSignal },
-      ): PromiseLike<ChatCompletion>;
+      ): PromiseLike<ChatCompletion | AsyncIterable<ChatCompletionChunk>>;
     };
   };
 };
+
+function isChunkStream(
+  value: ChatCompletion | AsyncIterable<ChatCompletionChunk>,
+): value is AsyncIterable<ChatCompletionChunk> {
+  return typeof (value as Partial<AsyncIterable<unknown>>)[Symbol.asyncIterator] === "function";
+}
 
 export interface OpenAiProviderOptions {
   /** Missing/empty keys are reported as a `missing_key` AiError at call time. */
@@ -83,6 +101,39 @@ export class OpenAiProvider implements AiProvider {
       throw new AiError("invalid_response", "OpenAI returned no chat content");
     }
     return { reply: message.content, usage: toUsage(completion) };
+  }
+
+  async *chatStream(request: ChatRequest): AsyncGenerator<ChatStreamChunk, void, undefined> {
+    const body: ChatCompletionCreateParamsStreaming = {
+      model: this.model,
+      messages: request.messages,
+      temperature: request.temperature,
+      max_completion_tokens: request.maxTokens,
+      stream: true,
+    };
+    const stream = await this.request(body, request.signal);
+    if (!isChunkStream(stream)) {
+      throw new AiError("invalid_response", "OpenAI did not return a stream");
+    }
+    // Leaving this loop early (the consumer calls return()) ends the SDK
+    // stream, which aborts the upstream HTTP request.
+    // The SDK ends iteration quietly when the connection closes early (no
+    // [DONE]), so a reply only counts as complete once a choice reports a
+    // finish_reason.
+    let finished = false;
+    try {
+      for await (const chunk of stream) {
+        const choice = chunk.choices[0];
+        if (choice?.finish_reason) finished = true;
+        const delta = choice?.delta?.content;
+        if (delta) yield { delta };
+      }
+    } catch (error) {
+      throw toAiError(error);
+    }
+    if (!finished) {
+      throw new AiError("provider_error", "OpenAI stream ended before the reply finished");
+    }
   }
 
   async extractCharacter(request: ExtractCharacterRequest): Promise<ExtractCharacterResult> {
@@ -141,6 +192,17 @@ export class OpenAiProvider implements AiProvider {
     body: ChatCompletionCreateParamsNonStreaming,
     signal: AbortSignal | undefined,
   ): Promise<ChatCompletion> {
+    const completion = await this.request(body, signal);
+    if (isChunkStream(completion)) {
+      throw new AiError("invalid_response", "OpenAI returned a stream for a non-streaming request");
+    }
+    return completion;
+  }
+
+  private async request(
+    body: ChatCompletionCreateParams,
+    signal: AbortSignal | undefined,
+  ): Promise<ChatCompletion | AsyncIterable<ChatCompletionChunk>> {
     if (!this.apiKey) {
       throw new AiError("missing_key", "OPENAI_API_KEY is not set");
     }

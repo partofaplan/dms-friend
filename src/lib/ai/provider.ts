@@ -43,9 +43,13 @@ export interface AiProvider {
   readonly name: string;
   chat(request: ChatRequest): Promise<ChatResult>;
   /**
-   * Streaming variant of chat. Optional until the streaming UI lands; callers
-   * should fall back to chat() when a provider does not implement it.
+   * Streaming variant of chat: yields non-empty text deltas in order. Setup
+   * failures (e.g. missing key) surface as an AiError from the first next();
+   * later failures as an AiError mid-iteration — including an upstream that
+   * ends without signalling completion. Aborting `signal` (which also
+   * interrupts a pending next()) or ending iteration early via return()
+   * aborts the upstream request.
    */
-  chatStream?(request: ChatRequest): AsyncIterable<ChatStreamChunk>;
+  chatStream(request: ChatRequest): AsyncIterable<ChatStreamChunk>;
   extractCharacter(request: ExtractCharacterRequest): Promise<ExtractCharacterResult>;
 }
