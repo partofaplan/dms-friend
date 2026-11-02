@@ -4,8 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CACHE_MAX_ENTRIES,
   CACHE_TTL_MS,
+  MAX_UPSTREAM_BYTES,
   monsterCache,
   OPEN5E_BASE_URL,
+  SEARCH_RESULT_LIMIT,
   UPSTREAM_TIMEOUT_MS,
 } from "@/lib/monsters/open5e";
 import type {
@@ -137,7 +139,17 @@ describe("GET /api/monsters?slug=", () => {
 });
 
 describe("GET /api/monsters validation", () => {
-  it.each(["", "?search=", "?search=%20%20", "?slug=", "?search=a&slug=b", "?slug=..%2Fadmin"])(
+  it.each([
+    "",
+    "?search=",
+    "?search=%20%20",
+    "?slug=",
+    "?search=a&slug=b",
+    "?search=goblin&slug=goblin",
+    "?search=&slug=goblin",
+    "?search=goblin&slug=%20%20%20",
+    "?slug=..%2Fadmin",
+  ])(
     "rejects %s with 400",
     async (query) => {
       const response = await get(query);
@@ -146,6 +158,14 @@ describe("GET /api/monsters validation", () => {
       expect(upstream).not.toHaveBeenCalled();
     },
   );
+
+  it.each([
+    ["?search=goblin", json(searchPayload([goblinRaw]))],
+    ["?slug=goblin", json(goblinRaw)],
+  ])("still accepts the single-param case %s", async (query, response) => {
+    upstream.mockResolvedValue(response);
+    expect((await get(query)).status).toBe(200);
+  });
 });
 
 describe("GET /api/monsters upstream failures", () => {
@@ -194,6 +214,57 @@ describe("GET /api/monsters upstream failures", () => {
 
     expect(response.status).toBe(504);
     expect(((await response.json()) as MonsterErrorResponseBody).error.kind).toBe("timeout");
+  });
+
+  it("rejects a declared Content-Length over the cap with 502 and does not cache it", async () => {
+    upstream.mockResolvedValueOnce(
+      new Response(JSON.stringify(goblinRaw), {
+        headers: { "Content-Length": String(MAX_UPSTREAM_BYTES + 1) },
+      }),
+    );
+    upstream.mockResolvedValueOnce(json(goblinRaw));
+
+    expect((await get("?slug=goblin")).status).toBe(502);
+    expect((await get("?slug=goblin")).status).toBe(200);
+    expect(upstream).toHaveBeenCalledTimes(2);
+  });
+
+  it("cancels a streamed body that grows past the cap, 502s, and does not cache it", async () => {
+    const chunk = new Uint8Array(64 * 1024).fill(0x20);
+    let pulled = 0;
+    const cancel = vi.fn();
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += chunk.byteLength;
+        controller.enqueue(chunk);
+      },
+      cancel,
+    });
+    upstream.mockResolvedValueOnce(new Response(endless, { status: 200 }));
+    upstream.mockResolvedValueOnce(json(searchPayload([goblinRaw])));
+
+    const response = await get("?search=goblin");
+
+    expect(response.status).toBe(502);
+    expect(((await response.json()) as MonsterErrorResponseBody).error.kind).toBe("upstream_error");
+    expect(cancel).toHaveBeenCalled();
+    expect(pulled).toBeLessThanOrEqual(MAX_UPSTREAM_BYTES + 2 * chunk.byteLength);
+    expect(monsterCache.size).toBe(0);
+
+    expect((await get("?search=goblin")).status).toBe(200);
+    expect(upstream).toHaveBeenCalledTimes(2);
+  });
+
+  it("caps the number of search results kept", async () => {
+    const many = Array.from({ length: SEARCH_RESULT_LIMIT * 4 }, (_, i) => ({
+      ...goblinRaw,
+      slug: `goblin-${i}`,
+    }));
+    upstream.mockResolvedValue(json(searchPayload(many)));
+
+    const body = (await (await get("?search=goblin")).json()) as MonsterSearchResponseBody;
+
+    expect(body.results).toHaveLength(SEARCH_RESULT_LIMIT);
   });
 
   it("does not cache failures", async () => {

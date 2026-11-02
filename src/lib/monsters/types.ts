@@ -24,12 +24,14 @@ export const monsterQuerySchema = z
     slug: z.string().trim().toLowerCase().max(MAX_SLUG_LENGTH).optional(),
   })
   .transform((query, ctx) => {
-    const search = query.search || undefined;
-    const slug = query.slug || undefined;
-    if (search && slug) {
+    // Presence is checked before emptiness: supplying both params is an error
+    // even when one of them is blank.
+    if (query.search !== undefined && query.slug !== undefined) {
       ctx.addIssue({ code: "custom", message: "Provide either search or slug, not both." });
       return z.NEVER;
     }
+    const search = query.search || undefined;
+    const slug = query.slug || undefined;
     if (slug) {
       if (!SLUG_PATTERN.test(slug)) {
         ctx.addIssue({ code: "custom", path: ["slug"], message: "slug is invalid" });
@@ -143,15 +145,29 @@ export interface MonsterErrorResponseBody {
 
 /* ── Normalizer ──────────────────────────────────────────────────────────── */
 
+/*
+ * Local bounds on normalized output, so a malformed or oversized upstream
+ * payload can't produce an unbounded stat block (in the cache or the UI).
+ * Generous next to real SRD data; extras are dropped and long text truncated.
+ */
+/** Short text fields: slug, name, type, senses, languages, feature names, … */
+export const MAX_FIELD_LENGTH = 500;
+/** Long text fields: feature descriptions and the legendary preamble. */
+export const MAX_DESC_LENGTH = 5_000;
+/** Entries kept per feature section (actions, traits, legendary actions, …). */
+export const MAX_SECTION_ENTRIES = 50;
+/** Speed modes and skills kept. */
+export const MAX_BONUS_ENTRIES = 30;
+
 type RawRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is RawRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Trimmed string, or "" for null/missing/non-string. */
-function text(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
+/** Trimmed string capped at `maxLength`, or "" for null/missing/non-string. */
+function text(value: unknown, maxLength = MAX_FIELD_LENGTH): string {
+  return typeof value === "string" ? value.trim().slice(0, maxLength).trim() : "";
 }
 
 /** Finite number (numeric strings accepted), or null. */
@@ -166,30 +182,37 @@ function finite(value: unknown): number | null {
 
 function features(value: unknown): MonsterFeature[] {
   if (!Array.isArray(value)) return [];
-  return value.flatMap((item) => {
-    if (!isRecord(item)) return [];
+  const result: MonsterFeature[] = [];
+  for (const item of value) {
+    if (result.length >= MAX_SECTION_ENTRIES) break;
+    if (!isRecord(item)) continue;
     const name = text(item.name);
-    const desc = text(item.desc);
-    return name || desc ? [{ name, desc }] : [];
-  });
+    const desc = text(item.desc, MAX_DESC_LENGTH);
+    if (name || desc) result.push({ name, desc });
+  }
+  return result;
 }
 
 function capitalize(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
-const CR_FRACTIONS: Record<string, number> = { "1/8": 0.125, "1/4": 0.25, "1/2": 0.5 };
+// A Map, not an object literal, so inherited keys like "toString" never match.
+const CR_FRACTIONS = new Map<string, number>([
+  ["1/8", 0.125],
+  ["1/4", 0.25],
+  ["1/2", 0.5],
+]);
 
 /** "1/4" → 0.25, "11" → 11. */
 export function parseChallengeRating(value: string): number | null {
   const trimmed = value.trim();
-  if (trimmed in CR_FRACTIONS) return CR_FRACTIONS[trimmed];
-  return finite(trimmed);
+  return CR_FRACTIONS.get(trimmed) ?? finite(trimmed);
 }
 
 /** 0.25 → "1/4", 11 → "11". */
 export function formatChallengeRating(cr: number): string {
-  const fraction = Object.entries(CR_FRACTIONS).find(([, value]) => value === cr);
+  const fraction = [...CR_FRACTIONS].find(([, value]) => value === cr);
   return fraction ? fraction[0] : String(cr);
 }
 
@@ -231,8 +254,9 @@ function speeds(value: unknown): Pick<MonsterStatBlock, "speed" | "hover"> {
   if (!isRecord(value)) return { speed: [], hover: false };
   const speed: MonsterSpeed[] = [];
   for (const [mode, feet] of Object.entries(value)) {
+    if (speed.length >= MAX_BONUS_ENTRIES) break;
     const n = finite(feet);
-    if (n !== null) speed.push({ mode, feet: n });
+    if (n !== null) speed.push({ mode: text(mode), feet: n });
   }
   // Walking speed reads first, as in printed stat blocks.
   speed.sort((a, b) => Number(b.mode === "walk") - Number(a.mode === "walk"));
@@ -241,10 +265,13 @@ function speeds(value: unknown): Pick<MonsterStatBlock, "speed" | "hover"> {
 
 function skills(value: unknown): MonsterBonus[] {
   if (!isRecord(value)) return [];
-  return Object.entries(value).flatMap(([skill, bonus]) => {
+  const result: MonsterBonus[] = [];
+  for (const [skill, bonus] of Object.entries(value)) {
+    if (result.length >= MAX_BONUS_ENTRIES) break;
     const n = finite(bonus);
-    return n === null ? [] : [{ name: capitalize(skill), bonus: n }];
-  });
+    if (n !== null) result.push({ name: capitalize(text(skill)), bonus: n });
+  }
+  return result;
 }
 
 /** Maps one raw Open5e search result to a list row; null if it lacks a slug or name. */
@@ -295,7 +322,7 @@ export function normalizeMonster(raw: unknown): MonsterStatBlock | null {
     actions: features(raw.actions),
     bonusActions: features(raw.bonus_actions),
     reactions: features(raw.reactions),
-    legendaryDesc: text(raw.legendary_desc),
+    legendaryDesc: text(raw.legendary_desc, MAX_DESC_LENGTH),
     legendaryActions: features(raw.legendary_actions),
   };
 }

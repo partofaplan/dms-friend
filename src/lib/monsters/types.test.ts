@@ -5,6 +5,10 @@ import {
   formatAbilityScore,
   formatChallengeRating,
   formatSpeed,
+  MAX_BONUS_ENTRIES,
+  MAX_DESC_LENGTH,
+  MAX_FIELD_LENGTH,
+  MAX_SECTION_ENTRIES,
   monsterQuerySchema,
   normalizeMonster,
   normalizeMonsterSummary,
@@ -40,6 +44,13 @@ describe("challenge rating", () => {
     expect(parseChallengeRating("11")).toBe(11);
     expect(parseChallengeRating("??")).toBeNull();
   });
+
+  it.each(["toString", "constructor", "__proto__", "hasOwnProperty", "valueOf", "1/3"])(
+    "never matches inherited or unknown keys: %s",
+    (value) => {
+      expect(parseChallengeRating(value)).toBeNull();
+    },
+  );
 
   it("formats numeric CRs", () => {
     expect(formatChallengeRating(0.25)).toBe("1/4");
@@ -169,6 +180,36 @@ describe("normalizeMonster", () => {
     expect(normalizeMonster({ name: "No Slug" })).toBeNull();
     expect(normalizeMonster({ slug: "no-name", name: "  " })).toBeNull();
   });
+
+  it("bounds section counts and string lengths from a pathological payload", () => {
+    const huge = "x".repeat(MAX_DESC_LENGTH * 3);
+    const many = Array.from({ length: MAX_SECTION_ENTRIES * 20 }, (_, i) => ({
+      name: `${huge}${i}`,
+      desc: huge,
+    }));
+    const monster = normalizeMonster({
+      slug: "big",
+      name: huge,
+      senses: huge,
+      legendary_desc: huge,
+      actions: many,
+      special_abilities: many,
+      legendary_actions: many,
+      skills: Object.fromEntries(Array.from({ length: 500 }, (_, i) => [`skill${i}`, i])),
+      speed: Object.fromEntries(Array.from({ length: 500 }, (_, i) => [`mode${i}`, i])),
+    })!;
+
+    expect(monster.name).toHaveLength(MAX_FIELD_LENGTH);
+    expect(monster.senses).toHaveLength(MAX_FIELD_LENGTH);
+    expect(monster.legendaryDesc).toHaveLength(MAX_DESC_LENGTH);
+    for (const section of [monster.actions, monster.specialAbilities, monster.legendaryActions]) {
+      expect(section).toHaveLength(MAX_SECTION_ENTRIES);
+      expect(section[0].name).toHaveLength(MAX_FIELD_LENGTH);
+      expect(section[0].desc).toHaveLength(MAX_DESC_LENGTH);
+    }
+    expect(monster.skills).toHaveLength(MAX_BONUS_ENTRIES);
+    expect(monster.speed).toHaveLength(MAX_BONUS_ENTRIES);
+  });
 });
 
 describe("monsterQuerySchema", () => {
@@ -185,6 +226,9 @@ describe("monsterQuerySchema", () => {
     [{ search: "   " }],
     [{ slug: "" }],
     [{ search: "goblin", slug: "goblin" }],
+    [{ search: "", slug: "goblin" }],
+    [{ search: "goblin", slug: "   " }],
+    [{ search: "", slug: "" }],
     [{ slug: "../etc/passwd" }],
     [{ search: "x".repeat(101) }],
   ])("rejects %j", (input) => {

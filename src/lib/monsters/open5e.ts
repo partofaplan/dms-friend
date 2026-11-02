@@ -22,6 +22,11 @@ export const SEARCH_RESULT_LIMIT = 25;
 export const UPSTREAM_TIMEOUT_MS = 8_000;
 export const CACHE_TTL_MS = 5 * 60_000;
 export const CACHE_MAX_ENTRIES = 200;
+/**
+ * Upstream body cap. A single SRD monster or a 25-result search page is a few
+ * tens of KB; anything past this is treated as an upstream failure.
+ */
+export const MAX_UPSTREAM_BYTES = 2 * 1024 * 1024;
 
 export type Open5eErrorKind = "not_found" | "upstream_error" | "timeout";
 
@@ -43,6 +48,44 @@ export const monsterCache = new TtlCache<CachedValue>({
   ttlMs: CACHE_TTL_MS,
   maxEntries: CACHE_MAX_ENTRIES,
 });
+
+/**
+ * Reads and parses a JSON response body, never buffering more than
+ * MAX_UPSTREAM_BYTES. A declared Content-Length over the cap is rejected before
+ * reading; otherwise bytes are counted as they arrive and the stream is
+ * cancelled as soon as the cap is crossed.
+ */
+async function readJsonWithLimit(response: Response): Promise<unknown> {
+  const declared = response.headers.get("content-length");
+  if (declared !== null && Number(declared) > MAX_UPSTREAM_BYTES) {
+    await response.body?.cancel().catch(() => {});
+    throw new Open5eError("upstream_error", "Open5e response exceeds the size limit");
+  }
+
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  if (response.body) {
+    const reader = response.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_UPSTREAM_BYTES) {
+        await reader.cancel().catch(() => {});
+        throw new Open5eError("upstream_error", "Open5e response exceeds the size limit");
+      }
+      chunks.push(value);
+    }
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
 
 async function fetchJson(url: string): Promise<unknown> {
   const controller = new AbortController();
@@ -66,8 +109,9 @@ async function fetchJson(url: string): Promise<unknown> {
       throw new Open5eError("upstream_error", `Open5e returned ${response.status}`);
     }
     try {
-      return await response.json();
+      return await readJsonWithLimit(response);
     } catch (error) {
+      if (error instanceof Open5eError) throw error;
       if (controller.signal.aborted) {
         throw new Open5eError("timeout", "Open5e response timed out", { cause: error });
       }
@@ -99,7 +143,12 @@ export async function searchMonsters(query: string): Promise<MonsterSummary[]> {
   if (!Array.isArray(results)) {
     throw new Open5eError("upstream_error", "Open5e search response has no results array");
   }
-  const summaries = results.flatMap((raw) => normalizeMonsterSummary(raw) ?? []);
+  const summaries: MonsterSummary[] = [];
+  for (const raw of results) {
+    if (summaries.length >= SEARCH_RESULT_LIMIT) break;
+    const summary = normalizeMonsterSummary(raw);
+    if (summary) summaries.push(summary);
+  }
   monsterCache.set(key, summaries);
   return summaries;
 }
