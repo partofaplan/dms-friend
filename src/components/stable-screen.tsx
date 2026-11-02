@@ -162,7 +162,7 @@ function PartyStable({ scope: repo }: { scope: PartyScopedRepository }) {
       ) : combatants.length === 0 ? (
         <div className="stable__empty">
           <p>No monsters in the stable.</p>
-          <p>Look up a monster and choose “Add to stable” to track it in combat.</p>
+          <p>Find a monster and choose “Add to stable” to track it in this party&apos;s combat.</p>
         </div>
       ) : (
         <ul className="stable__list">

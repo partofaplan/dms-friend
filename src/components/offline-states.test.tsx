@@ -1,14 +1,27 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import type { DexieRepository } from "@/lib/db";
 import { normalizeMonster, normalizeMonsterSummary } from "@/lib/monsters/types";
+import { getActiveProfileIds } from "@/lib/profiles/active-profile";
 import { goblinRaw } from "@/test-utils/open5e-fixtures";
-import { characterInput, createTestRepository } from "@/test-utils/repository";
+import {
+  activateParty,
+  characterInput,
+  createParty,
+  createTestRepository,
+} from "@/test-utils/repository";
 
+import { ActiveScopeBar } from "./active-scope-bar";
 import { ChatScreen } from "./chat-screen";
 import { MonsterSearch } from "./monster-search";
+import { OfflineBanner } from "./offline-status";
+import { ProfilesScreen } from "./profiles-screen";
 import { RosterScreen } from "./roster-screen";
 import { ScanScreen } from "./scan-screen";
+import { StableScreen } from "./stable-screen";
+
+const push = vi.fn();
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
 
 /*
  * How each screen behaves with the browser offline: the roster is local and
@@ -44,6 +57,95 @@ describe("offline", () => {
 
     expect(await screen.findByRole("article", { name: "Ilsa" })).toBeInTheDocument();
     expect(screen.queryByText(/You're offline/)).not.toBeInTheDocument();
+  });
+
+  describe("profiles (all local)", () => {
+    /** Zach with Strahd (Ilsa, a goblin; active) and an empty Waterdeep; Ana with Tomb. */
+    async function seedParties() {
+      const zach = await repo.users.create("Zach");
+      const strahd = await createParty(repo, zach.id, "Strahd");
+      await strahd.scope.characters.create(characterInput({ name: "Ilsa" }));
+      await strahd.scope.combatants.addFromMonster(normalizeMonster(goblinRaw)!);
+      const waterdeep = await createParty(repo, zach.id, "Waterdeep");
+      const ana = await repo.users.create("Ana");
+      await createParty(repo, ana.id, "Tomb");
+      await activateParty(repo, strahd.partyProfile.id);
+      return { zach, strahd, waterdeep, ana };
+    }
+
+    beforeEach(() => {
+      push.mockReset();
+      vi.stubGlobal("fetch", fetchMock);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("says profiles, roster and stable keep working offline", () => {
+      render(<OfflineBanner />);
+      expect(screen.getByRole("status")).toHaveTextContent(
+        /Your roster still works, as do your stable and profiles/,
+      );
+    });
+
+    it("creates, renames, switches and picks profiles without a connection", async () => {
+      const { ana } = await seedParties();
+      render(<ProfilesScreen repo={repo} />);
+      const parties = await screen.findByRole("list", { name: "Zach's parties" });
+
+      fireEvent.click(within(parties).getByRole("button", { name: "Switch to Waterdeep" }));
+      expect(await screen.findByRole("button", { name: "Playing Waterdeep" })).toBeInTheDocument();
+
+      fireEvent.change(screen.getByLabelText("New party name"), { target: { value: "Saltmarsh" } });
+      fireEvent.click(screen.getByRole("button", { name: "Create party" }));
+      expect(await screen.findByRole("button", { name: "Playing Saltmarsh" })).toBeInTheDocument();
+
+      await waitFor(() => expect(screen.getByRole("button", { name: "Rename Zach" })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: "Rename Zach" }));
+      fireEvent.change(screen.getByLabelText("New name for Zach"), { target: { value: "Zed" } });
+      fireEvent.click(screen.getByRole("button", { name: "Save name" }));
+      expect(await screen.findByRole("heading", { name: "Zed's parties" })).toBeInTheDocument();
+
+      await waitFor(() => expect(screen.getByRole("button", { name: "Play as Ana" })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: "Play as Ana" }));
+      await waitFor(() => expect(push).toHaveBeenCalledWith("/"));
+      expect(getActiveProfileIds()?.userId).toBe(ana.id);
+
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("switches parties from the scope bar and keeps roster and stable usable", async () => {
+      const { waterdeep } = await seedParties();
+      render(
+        <>
+          <ActiveScopeBar repo={repo} />
+          <RosterScreen repo={repo} />
+          <StableScreen repo={repo} />
+        </>,
+      );
+      expect(await screen.findByRole("article", { name: "Ilsa" })).toBeInTheDocument();
+      expect(await screen.findByRole("article", { name: "Goblin" })).toBeInTheDocument();
+
+      // HP still adjusts locally.
+      fireEvent.click(screen.getByRole("button", { name: "Decrease HP for Goblin" }));
+      await waitFor(() => expect(screen.getByRole("article", { name: "Goblin" })).toHaveTextContent("HP6 / 7"));
+
+      const select = await screen.findByLabelText("Active party");
+      await waitFor(() => expect(within(select).getAllByRole("option")).toHaveLength(2));
+      fireEvent.change(select, { target: { value: waterdeep.partyProfile.id } });
+
+      expect(await screen.findByText("Party: Waterdeep")).toBeInTheDocument();
+      expect(await screen.findByText("No characters yet.")).toBeInTheDocument();
+      expect(await screen.findByText("No monsters in the stable.")).toBeInTheDocument();
+
+      // Adding to the new party works offline too.
+      fireEvent.click(screen.getByRole("button", { name: "Add character" }));
+      expect(await screen.findByLabelText(/^Name/)).toBeInTheDocument();
+      expect(screen.queryByText(/You're offline/)).not.toBeInTheDocument();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
   });
 
   it("parks a monster search until the connection returns, then runs it", async () => {

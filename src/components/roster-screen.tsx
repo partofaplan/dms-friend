@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { CharacterForm } from "@/components/character-form";
@@ -197,7 +198,10 @@ function PartyRoster({ scope: repo }: { scope: PartyScopedRepository }) {
       ) : characters.length === 0 ? (
         <div className="roster__empty">
           <p>No characters yet.</p>
-          <p>Add your party&apos;s characters to keep their stats at hand.</p>
+          <p>No heroes in this party yet — scan a sheet or add one to keep their stats at hand.</p>
+          <Link href="/scan" className="roster__empty-scan">
+            Scan a character sheet
+          </Link>
         </div>
       ) : (
         <ul className="roster__list">

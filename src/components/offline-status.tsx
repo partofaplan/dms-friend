@@ -16,8 +16,8 @@ export function OfflineBanner() {
     >
       {!online && (
         <p className="offline-banner__text">
-          You&apos;re offline. Your roster still works; monster lookup, chat, and scanning need a
-          connection.
+          You&apos;re offline. Your roster still works, as do your stable and profiles; monster
+          lookup, chat, and scanning need a connection.
         </p>
       )}
     </div>

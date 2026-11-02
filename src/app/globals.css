@@ -14,6 +14,8 @@
   /* Height of the fixed bottom nav, and the room content leaves for it (incl. home indicator). */
   --bottom-nav-height: 84px;
   --bottom-nav-space: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom));
+  --scope-bar-height: 85px;
+  --scope-bar-space: calc(var(--scope-bar-height) + env(safe-area-inset-top));
 }
 
 * { box-sizing: border-box; }
@@ -347,7 +349,7 @@ h1 { margin: 12px 0; font-family: Georgia, 'Times New Roman', serif; font-size: 
 /* App frame: one shared reservation for the tab bar and home indicator. */
 .app-content { padding-bottom: var(--bottom-nav-space); }
 .app-content :is(.home-shell, .roster-shell, .scan-shell, .monsters-shell) {
-  min-height: calc(100dvh - var(--bottom-nav-space));
+  min-height: calc(100dvh - var(--bottom-nav-space) - var(--scope-bar-space));
 }
 .character-form__actions { bottom: var(--bottom-nav-space); padding-block: 16px; }
 
@@ -611,7 +613,7 @@ h1 { color: var(--text); text-shadow: 0 2px 0 #0006; }
 /* Battle ledger: carved walnut cards with candlelit, glanceable hit points. */
 .stable-shell {
   width: 100%; max-width: 800px; margin: 0 auto;
-  min-height: calc(100dvh - var(--bottom-nav-space));
+  min-height: calc(100dvh - var(--bottom-nav-space) - var(--scope-bar-space));
   padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) 32px max(20px, env(safe-area-inset-left));
 }
 .stable-shell__header { margin-bottom: 24px; padding-bottom: 28px; border-bottom: 1px solid var(--edge); }
@@ -790,6 +792,7 @@ h1 { color: var(--text); text-shadow: 0 2px 0 #0006; }
 .profiles__notice--error { border-style: dashed; border-left-style: solid; }
 .profiles__loading { margin: 0 0 20px; padding: 24px; border: 1px dashed var(--edge); border-radius: 5px; color: var(--muted); font-size: 14px; line-height: 1.6; }
 @media (min-width: 760px) {
+  :root { --scope-bar-height: 61px; }
   .active-scope { grid-template-columns: minmax(0, 1fr) minmax(220px, 300px) auto; gap: 16px; padding-inline: max(24px, env(safe-area-inset-left)) max(24px, env(safe-area-inset-right)); }
   .active-scope__summary { grid-column: auto; }
   .active-scope__error { grid-row: 2; }
@@ -806,4 +809,89 @@ h1 { color: var(--text); text-shadow: 0 2px 0 #0006; }
   .profiles button:not(:disabled):hover, .profiles__import input:not(:disabled):hover::file-selector-button, .active-scope__manage:hover { border-color: var(--accent); background: #523b28; }
   .profiles :is(.profile-card__choose, .party-card__switch):not(:disabled):hover { background: #f4d49b; color: var(--background); }
   :is(.profile-card__confirm, .party-card__confirm) > button:first-of-type:not(:disabled):hover { background: #ffd3cd; color: #301817; }
+}
+
+/* Intrinsic frame sizing also accommodates wrapped scope names and offline copy.
+   The viewport allowances above remain the standalone shell fallback; within the
+   frame, flex shares the actual remaining height rather than guessing bar height. */
+.app-body { display: flex; flex-direction: column; min-height: 100dvh; }
+.app-content { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.app-content > :is(.home-shell, .roster-shell, .scan-shell, .monsters-shell, .stable-shell) {
+  flex: 1; min-height: 0;
+}
+
+/* A small parchment notice pinned to the common-room board. */
+.profile-intro {
+  margin: 0 0 28px; padding: 22px;
+  border: 1px solid #b89560; border-radius: 5px;
+  background:
+    radial-gradient(circle at 9px 9px, #8a673a 0 1px, transparent 2px),
+    radial-gradient(circle at calc(100% - 9px) 9px, #8a673a 0 1px, transparent 2px),
+    repeating-linear-gradient(2deg, #79512705 0 1px, transparent 1px 6px),
+    var(--text);
+  color: var(--background);
+  box-shadow: inset 0 0 0 4px #b895601f, 0 5px 14px #0003;
+}
+.profile-intro__title {
+  margin: 0 0 10px; font-family: var(--display-font);
+  font-size: clamp(23px, 6vw, 27px); font-weight: 400; line-height: 1.25;
+  text-wrap: balance;
+}
+.profile-intro__text { margin: 0; color: #59432e; font-size: 14px; line-height: 1.75; overflow-wrap: anywhere; }
+.profile-intro__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 18px; }
+.profile-intro__action, .profile-intro__dismiss {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 44px; min-height: 44px; padding: 11px 14px;
+  border: 1px solid transparent; border-radius: 5px;
+  font: inherit; font-size: 14px; line-height: 1.5; touch-action: manipulation;
+}
+.profile-intro__action {
+  border-color: var(--wood); background: var(--wood); color: var(--text);
+  font-weight: 600; text-decoration: none; box-shadow: inset 0 1px 0 #ffffff18, 0 2px 4px #1c15111f;
+}
+.profile-intro__dismiss { background: transparent; color: #59432e; cursor: pointer; text-decoration: underline; text-underline-offset: 4px; }
+.profile-intro :is(a, button):focus-visible { outline: 3px solid #59432e; outline-offset: 3px; }
+
+/* Carved ledger panels: quiet invitations to begin a new adventure. */
+.roster__empty, .profiles__empty, .stable__empty, .chat-log__empty {
+  border: 1px solid #a58450; border-radius: 5px;
+  background: radial-gradient(ellipse at top, #e6bc7514, transparent 80%), var(--surface);
+  box-shadow: inset 0 0 0 5px #1c151144, inset 0 1px 0 #e6bc7520, 0 5px 18px #0002;
+}
+.roster__empty { padding: 32px 22px; }
+/* Decorative blank character sheet: no generated text or image download. */
+.roster__empty::before {
+  content: ""; display: block; width: 48px; height: 60px; margin: 0 auto 24px;
+  border: 1px solid var(--accent); border-radius: 3px;
+  background:
+    linear-gradient(var(--accent), var(--accent)) 9px 12px / 12px 14px no-repeat,
+    repeating-linear-gradient(to bottom, #e6bc7580 0 1px, transparent 1px 7px) 9px 34px / 28px 15px no-repeat,
+    #e6bc750b;
+  box-shadow: 5px 5px 0 var(--surface), 6px 6px 0 #a5845066;
+  transform: rotate(-5deg);
+}
+.roster__empty p:first-child { font-family: var(--display-font); line-height: 1.3; }
+.roster__empty p + p {
+  max-width: 340px; margin: 0 auto; color: var(--muted);
+  font-size: 14px; line-height: 1.75; text-wrap: pretty;
+}
+.roster__empty-scan {
+  display: inline-flex; align-items: center; justify-content: center;
+  max-width: 100%; min-height: 48px; margin-top: 22px; padding: 12px 18px;
+  border: 1px solid var(--accent); border-radius: 5px;
+  background: var(--accent); color: var(--background); font-size: 14px;
+  font-weight: 700; line-height: 1.5; text-decoration: none;
+  box-shadow: inset 0 1px 0 #ffffff30, 0 3px 8px #0003;
+}
+.profiles__empty { margin-bottom: 16px; padding: 28px 22px; text-align: center; }
+.profiles__empty p:first-child {
+  margin: 0 0 10px; color: var(--text); font-family: var(--display-font);
+  font-size: 26px; line-height: 1.3;
+}
+.profiles__empty p + p { max-width: 360px; margin: 0 auto; color: var(--muted); font-size: 14px; line-height: 1.75; text-wrap: pretty; }
+.profiles__empty + .profiles__create { border-style: solid; }
+@media (hover: hover) {
+  .profile-intro__action:hover { background: #523b28; }
+  .profile-intro__dismiss:hover { background: #b8956026; color: var(--background); }
+  .roster__empty-scan:hover { background: #f4d49b; }
 }

@@ -290,6 +290,11 @@ export function ProfilesScreen({
             <p className="profiles__loading" role="status">
               Loading parties…
             </p>
+          ) : parties.length === 0 ? (
+            <div className="profiles__empty">
+              <p>No campaigns yet.</p>
+              <p>Create a party below to start tracking a campaign.</p>
+            </div>
           ) : (
             <ul className="profiles__list" aria-label={`${activeUser.name}'s parties`}>
               {parties.map((party) => {
