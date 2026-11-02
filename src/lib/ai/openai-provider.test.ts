@@ -2,6 +2,8 @@
 import { APIConnectionTimeoutError, APIError } from "openai";
 import type {
   ChatCompletion,
+  ChatCompletionChunk,
+  ChatCompletionCreateParams,
   ChatCompletionCreateParamsNonStreaming,
 } from "openai/resources/chat/completions";
 import { describe, expect, it, vi } from "vitest";
@@ -131,6 +133,79 @@ describe("OpenAiProvider.chat", () => {
       throw new TypeError("socket hang up");
     });
     await expectAiError(provider.chat({ messages: [{ role: "user", content: "hi" }] }), "provider_error");
+  });
+});
+
+describe("OpenAiProvider.chatStream", () => {
+  function chunk(content: string | undefined): ChatCompletionChunk {
+    return {
+      id: "chatcmpl-test",
+      object: "chat.completion.chunk",
+      created: 0,
+      model: DEFAULT_OPENAI_MODEL,
+      choices: [{ index: 0, delta: { content }, finish_reason: null, logprobs: null }],
+    };
+  }
+
+  async function* sdkStream(contents: (string | undefined)[], error?: unknown) {
+    for (const content of contents) yield chunk(content);
+    if (error) throw error;
+  }
+
+  function streamSetup(stream: () => AsyncIterable<ChatCompletionChunk>, apiKey: string | undefined = FAKE_KEY) {
+    const create = vi.fn<(body: ChatCompletionCreateParams, options?: unknown) => Promise<AsyncIterable<ChatCompletionChunk>>>(
+      async () => stream(),
+    );
+    const createClient = vi.fn(() => ({ chat: { completions: { create } } }));
+    const provider = new OpenAiProvider({ apiKey, createClient });
+    return { provider, create, createClient };
+  }
+
+  async function collect(iterable: AsyncIterable<{ delta: string }>): Promise<string[]> {
+    const out: string[] = [];
+    for await (const { delta } of iterable) out.push(delta);
+    return out;
+  }
+
+  it("requests a stream and yields the non-empty text deltas", async () => {
+    const { provider, create } = streamSetup(() => sdkStream(["Roll ", undefined, "", "a d20."]));
+    const signal = new AbortController().signal;
+
+    const out = await collect(
+      provider.chatStream({ messages: [{ role: "user", content: "hi" }], temperature: 0.2, signal }),
+    );
+
+    expect(out).toEqual(["Roll ", "a d20."]);
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "gpt-4o", stream: true, temperature: 0.2 }),
+      { signal },
+    );
+  });
+
+  it("reports missing_key on first iteration without touching the network", async () => {
+    const { provider, createClient } = streamSetup(() => sdkStream(["x"]), "");
+    await expectAiError(collect(provider.chatStream({ messages: [{ role: "user", content: "hi" }] })), "missing_key");
+    expect(createClient).not.toHaveBeenCalled();
+  });
+
+  it("maps a failure to start the stream", async () => {
+    const { provider } = streamSetup(() => {
+      throw APIError.generate(429, { message: "slow down" }, undefined, new Headers());
+    });
+    await expectAiError(collect(provider.chatStream({ messages: [{ role: "user", content: "hi" }] })), "rate_limited");
+  });
+
+  it("maps a mid-stream failure to an AiError", async () => {
+    const { provider } = streamSetup(() => sdkStream(["partial"], new APIConnectionTimeoutError()));
+    const seen: string[] = [];
+    const error = await (async () => {
+      for await (const { delta } of provider.chatStream({ messages: [{ role: "user", content: "hi" }] })) {
+        seen.push(delta);
+      }
+    })().catch((e: unknown) => e);
+    expect(seen).toEqual(["partial"]);
+    expect(error).toBeInstanceOf(AiError);
+    expect((error as AiError).kind).toBe("timeout");
   });
 });
 

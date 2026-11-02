@@ -178,6 +178,20 @@ export interface ChatResponseBody {
 }
 
 /**
+ * POST /api/ai/chat/stream 200 response: a Server-Sent Events stream whose
+ * frames are `event: <type>\ndata: <JSON ChatStreamEvent>\n\n`. A successful
+ * stream is zero or more `delta` frames followed by exactly one `done`; a
+ * failure after streaming started ends with one `error` frame instead. Failures
+ * before the first delta are ordinary non-2xx AiErrorResponseBody responses.
+ */
+export const CHAT_STREAM_ENDPOINT = "/api/ai/chat/stream";
+
+export type ChatStreamEvent =
+  | { type: "delta"; delta: string }
+  | { type: "done" }
+  | { type: "error"; error: { kind: AiErrorKind; message: string } };
+
+/**
  * POST /api/ai/extract 200 response body. `data` is the model's JSON, shaped
  * like the Character model but NOT validated against it — callers map and
  * validate it with the Zod character schema.

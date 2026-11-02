@@ -3,6 +3,7 @@
 import { useEffect, useId, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 
 import { MonsterStatBlock } from "@/components/monster-stat-block";
+import { setLastViewedMonster } from "@/lib/chat/last-monster";
 import { fetchMonsterDetail, fetchMonsterSearch } from "@/lib/monsters/client";
 import type { MonsterStatBlock as MonsterStatBlockData, MonsterSummary } from "@/lib/monsters/types";
 
@@ -120,6 +121,8 @@ export function MonsterSearch({ fetchImpl, debounceMs = SEARCH_DEBOUNCE_MS }: Mo
     try {
       const result = await fetchMonsterDetail(summary.slug, { signal: controller.signal, fetchImpl });
       if (controller.signal.aborted) return;
+      // Feeds the chat assistant's context (see /chat).
+      if (result.ok) setLastViewedMonster(result.data);
       setDetail(
         result.ok
           ? { status: "loaded", monster: result.data }

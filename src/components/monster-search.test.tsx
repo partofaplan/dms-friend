@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 
+import { getLastViewedMonster, setLastViewedMonster } from "@/lib/chat/last-monster";
 import { normalizeMonster, normalizeMonsterSummary } from "@/lib/monsters/types";
 import { goblinRaw, guardianRaw } from "@/test-utils/open5e-fixtures";
 
@@ -254,5 +255,28 @@ describe("MonsterSearch", () => {
     });
     expect(screen.getByRole("article", { name: "Goblin" })).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("records the loaded stat block as the last-viewed monster for chat", async () => {
+    setLastViewedMonster(null);
+    fetchMock
+      .mockResolvedValueOnce(json({ results: summaries }))
+      .mockResolvedValueOnce(json({ error: { kind: "timeout", message: "x" } }, 504))
+      .mockResolvedValueOnce(json({ monster: guardian }));
+    renderSearch();
+
+    await type("gob");
+    await flushDebounce();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Goblin/ }));
+    });
+    // A failed load does not change it.
+    expect(getLastViewedMonster()).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Vault Guardian/ }));
+    });
+    expect(getLastViewedMonster()).toEqual(guardian);
+    setLastViewedMonster(null);
   });
 });

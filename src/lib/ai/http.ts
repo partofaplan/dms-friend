@@ -1,6 +1,7 @@
 import type { z } from "zod";
-import type { AiErrorKind, AiErrorResponseBody } from "./contracts";
+import type { AiErrorKind, AiErrorResponseBody, ChatStreamEvent } from "./contracts";
 import { AI_ERROR_HTTP_STATUS, AI_ERROR_PUBLIC_MESSAGE, isAiError } from "./errors";
+import type { ChatStreamChunk } from "./provider";
 
 /* Shared helpers for the /api/ai/* route handlers. */
 
@@ -110,13 +111,80 @@ export async function parseJsonBody<S extends z.ZodType>(
 }
 
 /**
- * Maps a thrown error to a safe JSON response. Only fixed public messages are
- * returned; upstream details are logged server-side by kind/status only.
+ * Reduces a thrown error to its kind and fixed public message, logging
+ * upstream details server-side by kind/status only.
  */
-export function aiErrorResponse(error: unknown, route: string): Response {
+function publicAiError(error: unknown, route: string): { kind: AiErrorKind; message: string } {
   const kind: AiErrorKind = isAiError(error) ? error.kind : "provider_error";
   // AiError messages are written by us and never contain secrets.
   const detail = isAiError(error) ? error.message : "non-AiError thrown";
   console.error(`[${route}] AI request failed (${kind}): ${detail}`);
-  return errorJson(kind, AI_ERROR_PUBLIC_MESSAGE[kind], AI_ERROR_HTTP_STATUS[kind]);
+  return { kind, message: AI_ERROR_PUBLIC_MESSAGE[kind] };
+}
+
+/**
+ * Maps a thrown error to a safe JSON response. Only fixed public messages are
+ * returned; upstream details are logged server-side by kind/status only.
+ */
+export function aiErrorResponse(error: unknown, route: string): Response {
+  const { kind, message } = publicAiError(error, route);
+  return errorJson(kind, message, AI_ERROR_HTTP_STATUS[kind]);
+}
+
+/** Serializes one SSE frame: `event: <type>\ndata: <json>\n\n`. */
+export function encodeChatStreamEvent(event: ChatStreamEvent): string {
+  return `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
+}
+
+/**
+ * Wraps an already-started chat stream as a Server-Sent Events response.
+ * `first` is the delta the caller pulled to confirm the stream started (so
+ * setup failures could still become normal JSON error responses). Each later
+ * delta is pulled on demand; completion sends `done`, and a failure sends one
+ * `error` frame with the fixed public message — never upstream text — before
+ * closing. Cancelling the response (client disconnect) ends the iterator,
+ * which aborts the upstream request.
+ */
+export function chatStreamResponse(
+  first: ChatStreamChunk,
+  iterator: AsyncIterator<ChatStreamChunk>,
+  route: string,
+): Response {
+  const encoder = new TextEncoder();
+  let pending: ChatStreamChunk | undefined = first;
+  const send = (controller: ReadableStreamDefaultController<Uint8Array>, event: ChatStreamEvent) =>
+    controller.enqueue(encoder.encode(encodeChatStreamEvent(event)));
+
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (pending) {
+        send(controller, { type: "delta", delta: pending.delta });
+        pending = undefined;
+        return;
+      }
+      try {
+        const next = await iterator.next();
+        if (next.done) {
+          send(controller, { type: "done" });
+          controller.close();
+        } else {
+          send(controller, { type: "delta", delta: next.value.delta });
+        }
+      } catch (error) {
+        send(controller, { type: "error", error: publicAiError(error, route) });
+        controller.close();
+      }
+    },
+    async cancel() {
+      await iterator.return?.();
+    },
+  });
+
+  return new Response(body, {
+    headers: {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      "x-accel-buffering": "no",
+    },
+  });
 }
