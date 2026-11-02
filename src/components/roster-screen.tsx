@@ -6,9 +6,11 @@ import { CharacterForm } from "@/components/character-form";
 import { formatLabel } from "@/lib/character-form-values";
 import {
   repository as defaultRepository,
+  type AppRepository,
   type Character,
-  type Repository,
+  type PartyScopedRepository,
 } from "@/lib/db";
+import { useActiveProfile } from "@/lib/profiles/active-profile";
 import { useWriteQueue } from "@/lib/use-write-queue";
 
 type View =
@@ -18,8 +20,35 @@ type View =
 
 export type RosterScreenProps = {
   /** Injectable for tests; defaults to the app-wide IndexedDB repository. */
-  repo?: Repository;
+  repo?: AppRepository;
 };
+
+/**
+ * The active party's characters. Switching parties remounts the roster, so
+ * nothing (an open editor, a pending delete) carries over between parties.
+ */
+export function RosterScreen({ repo = defaultRepository }: RosterScreenProps) {
+  const active = useActiveProfile(repo);
+  if (!active.scope) {
+    return (
+      <section className="roster" aria-labelledby="roster-title">
+        <div className="roster__header">
+          <h2 id="roster-title">Characters</h2>
+        </div>
+        {active.error ? (
+          <p className="roster__error" role="alert">
+            {active.error}
+          </p>
+        ) : (
+          <p className="roster__loading" role="status">
+            Loading characters…
+          </p>
+        )}
+      </section>
+    );
+  }
+  return <PartyRoster key={active.scope.partyProfileId} scope={active.scope} />;
+}
 
 /*
  * The roster is always re-read from the repository after a create, edit, or
@@ -32,7 +61,7 @@ export type RosterScreenProps = {
  * snapshot (see useWriteQueue). While a character has work queued, its row
  * controls are disabled.
  */
-export function RosterScreen({ repo = defaultRepository }: RosterScreenProps) {
+function PartyRoster({ scope: repo }: { scope: PartyScopedRepository }) {
   const [characters, setCharacters] = useState<Character[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -125,7 +154,7 @@ export function RosterScreen({ repo = defaultRepository }: RosterScreenProps) {
         </h2>
         <CharacterForm
           key={editing?.id ?? "new"}
-          repo={repo}
+          scope={repo}
           characterId={editing?.id}
           initialValues={editing}
           onSaved={handleSaved}

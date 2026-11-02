@@ -1,16 +1,19 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-import type { DexieRepository } from "@/lib/db";
+import type { DexieRepository, PartyScopedRepository } from "@/lib/db";
 import { MAX_IMAGE_BASE64_LENGTH } from "@/lib/ai/contracts";
-import { createTestRepository } from "@/test-utils/repository";
+import { activateDefaultParty, createTestRepository } from "@/test-utils/repository";
 
 import { ScanScreen } from "./scan-screen";
 
 let repo: DexieRepository;
+/** The active party, which scanned characters join. */
+let party: PartyScopedRepository;
 let fetchMock: ReturnType<typeof vi.fn<typeof fetch>>;
 
-beforeEach(() => {
+beforeEach(async () => {
   repo = createTestRepository();
+  ({ scope: party } = await activateDefaultParty(repo));
   fetchMock = vi.fn<typeof fetch>();
 });
 
@@ -156,7 +159,7 @@ describe("ScanScreen", () => {
 
   it("saves the reviewed character to the repository with its source scan", async () => {
     fetchMock.mockResolvedValue(jsonResponse({ data: extracted, raw: "{}" }));
-    const create = vi.spyOn(repo.characters, "create");
+    const create = vi.spyOn(party.characters, "create");
     renderScan();
     pick(pngFile());
 
@@ -176,7 +179,7 @@ describe("ScanScreen", () => {
     // Let next/link's deferred post-mount (prefetch visibility) update settle inside act.
     await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
     expect(create).toHaveBeenCalledTimes(1);
-    const saved = await repo.characters.getAll();
+    const saved = await party.characters.getAll();
     expect(saved).toHaveLength(1);
     expect(saved[0]).toMatchObject({
       name: "Ilsa Brightwater",
@@ -261,7 +264,7 @@ describe("ScanScreen", () => {
         raw: "{}",
       }),
     );
-    const create = vi.spyOn(repo.characters, "create");
+    const create = vi.spyOn(party.characters, "create");
     renderScan();
     pick(pngFile());
     await screen.findByRole("form", { name: "New character" });
@@ -284,7 +287,7 @@ describe("ScanScreen", () => {
     expect(spinbutton("Strength")).toHaveAttribute("aria-invalid", "true");
     expect(spinbutton("Dexterity")).toHaveAttribute("aria-invalid", "true");
     expect(create).not.toHaveBeenCalled();
-    expect(await repo.characters.getAll()).toHaveLength(0);
+    expect(await party.characters.getAll()).toHaveLength(0);
 
     fireEvent.change(spinbutton("Level"), { target: { value: "3" } });
     fireEvent.change(spinbutton("Strength"), { target: { value: "9" } });
@@ -296,7 +299,7 @@ describe("ScanScreen", () => {
     );
     // Let next/link's deferred post-mount (prefetch visibility) update settle inside act.
     await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
-    const saved = await repo.characters.getAll();
+    const saved = await party.characters.getAll();
     expect(saved).toHaveLength(1);
     expect(saved[0]).toMatchObject({
       level: 3,
@@ -319,10 +322,10 @@ describe("ScanScreen", () => {
     fetchMock.mockImplementation(async () =>
       jsonResponse({ data: extracted, raw: "{}" }),
     );
-    const realCreate = repo.characters.create.bind(repo.characters);
+    const realCreate = party.characters.create.bind(party.characters);
     let resolveCreate!: () => void;
     const create = vi
-      .spyOn(repo.characters, "create")
+      .spyOn(party.characters, "create")
       .mockImplementationOnce(
         (input) =>
           new Promise((resolve) => {
@@ -349,7 +352,7 @@ describe("ScanScreen", () => {
     await act(async () => {
       resolveCreate();
     });
-    await waitFor(async () => expect(await repo.characters.getAll()).toHaveLength(1));
+    await waitFor(async () => expect(await party.characters.getAll()).toHaveLength(1));
 
     // The newer run's review is untouched by the stale completion.
     expect(screen.getByRole("form", { name: "New character" })).toBeInTheDocument();

@@ -1,4 +1,4 @@
-export type NavIconName = "home" | "roster" | "monsters" | "stable" | "chat" | "scan";
+export type NavIconName = "home" | "roster" | "monsters" | "stable" | "chat" | "scan" | "profiles";
 
 export type NavItem = {
   href: string;
@@ -29,8 +29,22 @@ export const NAV_ITEMS: readonly NavItem[] = [
 /** Bottom navigation tabs: Home followed by every feature screen. */
 export const PRIMARY_NAV_ITEMS: readonly NavItem[] = [HOME_NAV_ITEM, ...NAV_ITEMS];
 
+/**
+ * The profile picker. Not a bottom tab (six is already full); it's reached
+ * from the active-scope bar at the top of every screen.
+ */
+export const PROFILES_NAV_ITEM: NavItem = {
+  href: "/profiles",
+  label: "Profiles",
+  description: "Switch who's playing and which party",
+  icon: "profiles",
+  requiresNetwork: false,
+};
+
 /** Every top-level route; public/sw.js precaches the same list (keep in sync). */
-export const APP_ROUTES: readonly string[] = PRIMARY_NAV_ITEMS.map((item) => item.href);
+export const APP_ROUTES: readonly string[] = [...PRIMARY_NAV_ITEMS, PROFILES_NAV_ITEM].map(
+  (item) => item.href,
+);
 
 /** Whether `href` is the active tab for `pathname` (Home only on an exact match). */
 export function isActiveRoute(href: string, pathname: string | null): boolean {

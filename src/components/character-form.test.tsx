@@ -1,14 +1,22 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-import type { DexieRepository } from "@/lib/db";
-import { characterInput, createTestRepository } from "@/test-utils/repository";
+import type { DexieRepository, PartyScopedRepository } from "@/lib/db";
+import {
+  activateDefaultParty,
+  characterInput,
+  createParty,
+  createTestRepository,
+} from "@/test-utils/repository";
 
 import { CharacterForm } from "./character-form";
 
 let repo: DexieRepository;
+/** The active party, which new characters join. */
+let party: PartyScopedRepository;
 
-beforeEach(() => {
+beforeEach(async () => {
   repo = createTestRepository();
+  ({ scope: party } = await activateDefaultParty(repo));
 });
 
 afterEach(() => {
@@ -42,7 +50,7 @@ function fillValid() {
 
 describe("CharacterForm", () => {
   it("surfaces required-field errors and does not create a record", async () => {
-    const create = vi.spyOn(repo.characters, "create");
+    const create = vi.spyOn(party.characters, "create");
     const onSaved = vi.fn();
     render(<CharacterForm repo={repo} onSaved={onSaved} />);
 
@@ -58,11 +66,11 @@ describe("CharacterForm", () => {
     expect(name).toHaveFocus();
     expect(create).not.toHaveBeenCalled();
     expect(onSaved).not.toHaveBeenCalled();
-    expect(await repo.characters.getAll()).toEqual([]);
+    expect(await party.characters.getAll()).toEqual([]);
   });
 
   it("reports out-of-range values from the schema", async () => {
-    const create = vi.spyOn(repo.characters, "create");
+    const create = vi.spyOn(party.characters, "create");
     render(<CharacterForm repo={repo} />);
 
     fillValid();
@@ -122,11 +130,11 @@ describe("CharacterForm", () => {
       skillProficiencies: ["athletics"],
       conditions: ["poisoned"],
     });
-    expect(await repo.characters.getAll()).toEqual([saved]);
+    expect(await party.characters.getAll()).toEqual([saved]);
   });
 
   it("pre-fills from initial values and updates the existing record", async () => {
-    const existing = await repo.characters.create(
+    const existing = await party.characters.create(
       characterInput({ race: "Dwarf", notes: "Grumpy", rawScan: "scan-1" }),
     );
     const onSaved = vi.fn();
@@ -146,11 +154,25 @@ describe("CharacterForm", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
 
     await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
-    const stored = await repo.characters.getById(existing.id);
+    const stored = await party.characters.getById(existing.id);
     expect(stored?.name).toBe("Brakka the Bold");
     expect(stored?.race).toBeUndefined();
     expect(stored?.notes).toBe("Grumpy");
     expect(stored?.rawScan).toBe("scan-1");
-    expect(await repo.characters.getAll()).toHaveLength(1);
+    expect(await party.characters.getAll()).toHaveLength(1);
+  });
+
+  it("saves into an explicit scope when given one, instead of the active party", async () => {
+    const { user } = await activateDefaultParty(repo);
+    const other = await createParty(repo, user.id, "Curse of Strahd");
+    const onSaved = vi.fn();
+    render(<CharacterForm repo={repo} scope={other.scope} onSaved={onSaved} />);
+
+    fillValid();
+    submit();
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    expect(await other.scope.characters.getAll()).toHaveLength(1);
+    expect(await party.characters.getAll()).toEqual([]);
   });
 });

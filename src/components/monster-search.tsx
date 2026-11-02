@@ -6,7 +6,8 @@ import { AddToStable } from "@/components/add-to-stable";
 import { MonsterStatBlock } from "@/components/monster-stat-block";
 import { OfflineNotice } from "@/components/offline-status";
 import { setLastViewedMonster } from "@/lib/chat/last-monster";
-import type { Repository } from "@/lib/db";
+import type { AppRepository } from "@/lib/db";
+import { getActiveProfileIds } from "@/lib/profiles/active-profile";
 import { fetchMonsterDetail, fetchMonsterSearch } from "@/lib/monsters/client";
 import type { MonsterStatBlock as MonsterStatBlockData, MonsterSummary } from "@/lib/monsters/types";
 import { isOnline, useOnlineStatus, useOnReconnect } from "@/lib/pwa/online-status";
@@ -18,7 +19,7 @@ export type MonsterSearchProps = {
   fetchImpl?: typeof fetch;
   debounceMs?: number;
   /** Where "Add to stable" saves; injectable for tests. */
-  repo?: Repository;
+  repo?: AppRepository;
 };
 
 type SearchState =
@@ -147,9 +148,11 @@ export function MonsterSearch({ fetchImpl, debounceMs = SEARCH_DEBOUNCE_MS, repo
     try {
       const result = await fetchMonsterDetail(summary.slug, { signal: controller.signal, fetchImpl });
       if (controller.signal.aborted) return;
-      // Feeds the chat assistant's context (see /chat).
+      // Feeds the active party's chat context (see /chat). Read at load time
+      // so a party switched mid-request gets the monster, not the old one.
       if (result.ok) {
-        setLastViewedMonster(result.data);
+        const partyProfileId = getActiveProfileIds()?.partyProfileId;
+        if (partyProfileId) setLastViewedMonster(partyProfileId, result.data);
         setDetail({ status: "loaded", monster: result.data });
       } else if (!isOnline()) {
         // Dropped mid-request: park the selection for the reconnect handler.

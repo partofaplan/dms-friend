@@ -217,7 +217,19 @@ export class DexieRepository implements AppRepository {
     };
   }
 
+  /** One scope object per party, so callers (and test spies) can hold onto it. */
+  private readonly scopes = new Map<string, PartyScopedRepository>();
+
   forParty(partyProfileId: string): PartyScopedRepository {
+    let scope = this.scopes.get(partyProfileId);
+    if (!scope) {
+      scope = this.createScope(partyProfileId);
+      this.scopes.set(partyProfileId, scope);
+    }
+    return scope;
+  }
+
+  private createScope(partyProfileId: string): PartyScopedRepository {
     const inScope = <T extends { partyProfileId: string }>(
       record: T | undefined,
     ) => (record?.partyProfileId === partyProfileId ? record : undefined);

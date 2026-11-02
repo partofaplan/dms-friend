@@ -3,13 +3,14 @@
 import Link from "next/link";
 import { useState } from "react";
 
-import { combatantName, repository as defaultRepository, type Repository } from "@/lib/db";
+import { combatantName, repository as defaultRepository, type AppRepository } from "@/lib/db";
 import type { MonsterStatBlock } from "@/lib/monsters/types";
+import { activePartyScope } from "@/lib/profiles/active-profile";
 
 export type AddToStableProps = {
   monster: MonsterStatBlock;
   /** Injectable for tests; defaults to the app-wide IndexedDB repository. */
-  repo?: Repository;
+  repo?: AppRepository;
 };
 
 type AddState =
@@ -19,7 +20,8 @@ type AddState =
   | { status: "error"; message: string };
 
 /*
- * Saves the viewed stat block to the monster stable at full HP. Adding again
+ * Saves the viewed stat block to the active party's monster stable at full
+ * HP (the party is resolved at click time). Adding again
  * is allowed (a second goblin) and gets the next number ("Goblin 2"). Works
  * offline: the stat block is already loaded and the stable is local.
  *
@@ -31,7 +33,8 @@ export function AddToStable({ monster, repo = defaultRepository }: AddToStablePr
   async function add() {
     setState({ status: "adding" });
     try {
-      const combatant = await repo.combatants.addFromMonster(monster);
+      const { combatants } = await activePartyScope(repo);
+      const combatant = await combatants.addFromMonster(monster);
       setState({ status: "added", name: combatantName(combatant) });
     } catch {
       setState({

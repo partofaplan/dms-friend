@@ -3,9 +3,10 @@ import {
   repository as defaultRepository,
   type Combatant,
   type Condition,
+  type AppRepository,
   type HitPoints,
-  type Repository,
 } from "@/lib/db";
+import { activePartyScope } from "@/lib/profiles/active-profile";
 import { clip, TRUNCATION_MARK } from "@/lib/text/clip";
 
 /*
@@ -45,11 +46,12 @@ export function summarizeCombatant(combatant: Combatant): CombatantSummary {
   };
 }
 
-/** Every combatant in the stable with live HP and conditions, in the order added. */
+/** Every combatant in the active party's stable with live HP and conditions, in the order added. */
 export async function getCombatState(
-  repo: Repository = defaultRepository,
+  repo: AppRepository = defaultRepository,
 ): Promise<CombatantSummary[]> {
-  return (await repo.combatants.getAll()).map(summarizeCombatant);
+  const scope = await activePartyScope(repo);
+  return (await scope.combatants.getAll()).map(summarizeCombatant);
 }
 
 /** Combatants described in full; the rest are only counted. */

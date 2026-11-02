@@ -81,7 +81,7 @@ const SHELL_HTML = `<html><head>
 <script>self.__next_f.push([1,"HL[\\"/_next/static/css/app.css\\",\\"style\\"]"])</script>
 </head><body>shell v1</body></html>`;
 
-const FEATURE_ROUTES = ["/roster", "/stable", "/scan", "/monsters", "/chat"];
+const FEATURE_ROUTES = ["/roster", "/stable", "/profiles", "/scan", "/monsters", "/chat"];
 
 /** A feature page: the shared app chunks plus its own page chunk. */
 function pageChunk(route: string) {
@@ -258,6 +258,13 @@ describe("service worker", () => {
     it("treats the monster stable as required, since it works offline", async () => {
       expect(swRouteList("REQUIRED_ROUTES")).toContain("/stable");
       const page = setup({ "/stable": () => new Response("", { status: 500 }) });
+      await expect(page.lifecycle("install")).rejects.toThrow();
+      expect(page.self.skipWaiting).not.toHaveBeenCalled();
+    });
+
+    it("treats the profile picker as required, since it works offline", async () => {
+      expect(swRouteList("REQUIRED_ROUTES")).toContain("/profiles");
+      const page = setup({ "/profiles": () => new Response("", { status: 500 }) });
       await expect(page.lifecycle("install")).rejects.toThrow();
       expect(page.self.skipWaiting).not.toHaveBeenCalled();
     });

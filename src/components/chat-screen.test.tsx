@@ -2,13 +2,19 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 
 import { CHAT_STREAM_ENDPOINT, type ChatRequestBody } from "@/lib/ai/contracts";
 import { buildSystemContext } from "@/lib/chat/context";
-import { LAST_MONSTER_STORAGE_KEY, setLastViewedMonster } from "@/lib/chat/last-monster";
+import { lastMonsterStorageKey, setLastViewedMonster } from "@/lib/chat/last-monster";
 import { CHAT_ERROR_MESSAGES } from "@/lib/chat/stream-client";
-import type { DexieRepository } from "@/lib/db";
+import type { DexieRepository, PartyScopedRepository } from "@/lib/db";
 import { normalizeMonster } from "@/lib/monsters/types";
+import { setActiveParty } from "@/lib/profiles/active-profile";
 import { aiErrorJson, controllableChatStream } from "@/test-utils/chat-stream";
 import { goblinRaw } from "@/test-utils/open5e-fixtures";
-import { characterInput, createTestRepository } from "@/test-utils/repository";
+import {
+  activateDefaultParty,
+  characterInput,
+  createParty,
+  createTestRepository,
+} from "@/test-utils/repository";
 
 import { ChatScreen } from "./chat-screen";
 
@@ -21,34 +27,35 @@ vi.mock("@/lib/chat/context", async (importOriginal) => {
 const goblin = normalizeMonster(goblinRaw)!;
 
 let repo: DexieRepository;
+/** The active party: the chat's party, stable, history and last monster. */
+let party: PartyScopedRepository;
 let fetchMock: ReturnType<typeof vi.fn<typeof fetch>>;
 
-beforeEach(() => {
+beforeEach(async () => {
   repo = createTestRepository();
+  ({ scope: party } = await activateDefaultParty(repo));
   fetchMock = vi.fn<typeof fetch>();
 });
 
 afterEach(() => {
-  // Unmount before resetting the shared store so the reset doesn't re-render.
+  // Unmount before the shared stores are reset (vitest.setup.ts) so the reset doesn't re-render.
   cleanup();
   repo.db.close();
-  setLastViewedMonster(null);
-  sessionStorage.clear();
   vi.mocked(buildSystemContext).mockReset();
 });
 
 async function seedParty() {
-  await repo.characters.create(characterInput({ conditions: ["poisoned"] }));
-  await repo.characters.create(
+  await party.characters.create(characterInput({ conditions: ["poisoned"] }));
+  await party.characters.create(
     characterInput({ name: "Ilsa", className: "Wizard", level: 5, armorClass: 12 }),
   );
 }
 
 /** "Goblin" at full HP and a hurt, poisoned "Goblin 2". */
 async function seedStable() {
-  await repo.combatants.addFromMonster(goblin);
-  const second = await repo.combatants.addFromMonster(goblin);
-  await repo.combatants.update(second.id, {
+  await party.combatants.addFromMonster(goblin);
+  const second = await party.combatants.addFromMonster(goblin);
+  await party.combatants.update(second.id, {
     hitPoints: { max: 7, current: 3 },
     conditions: ["poisoned"],
   });
@@ -76,7 +83,7 @@ function sentBody(call = 0): ChatRequestBody {
 describe("ChatScreen", () => {
   it("notes the party and last-viewed monster it grounds answers in", async () => {
     await seedParty();
-    setLastViewedMonster(goblin);
+    setLastViewedMonster(party.partyProfileId, goblin);
     await renderChat();
     expect(screen.getByText("Using: party (2) · no stable · Goblin")).toBeInTheDocument();
   });
@@ -95,13 +102,13 @@ describe("ChatScreen", () => {
 
   it("follows a monster viewed while the chat is open", async () => {
     await renderChat();
-    act(() => setLastViewedMonster(goblin));
+    act(() => setLastViewedMonster(party.partyProfileId, goblin));
     expect(screen.getByText("Using: no party · no stable · Goblin")).toBeInTheDocument();
   });
 
   describe("@mentions", () => {
     async function seedThorin() {
-      await repo.characters.create(
+      await party.characters.create(
         characterInput({
           name: "Thorin",
           race: "Dwarf",
@@ -186,9 +193,9 @@ describe("ChatScreen", () => {
     });
 
     it("disambiguates same-named combatants by the pick", async () => {
-      await repo.combatants.addFromMonster(goblin);
-      const second = await repo.combatants.addFromMonster(goblin);
-      await repo.combatants.update(second.id, { label: "Goblin", hitPoints: { max: 7, current: 2 } });
+      await party.combatants.addFromMonster(goblin);
+      const second = await party.combatants.addFromMonster(goblin);
+      await party.combatants.update(second.id, { label: "Goblin", hitPoints: { max: 7, current: 2 } });
       fetchMock.mockResolvedValue(controllableChatStream().response);
       await renderChat();
 
@@ -210,7 +217,7 @@ describe("ChatScreen", () => {
     });
 
     it("pins nothing that isn't @mentioned, even a character named like a common word", async () => {
-      await repo.characters.create(characterInput({ name: "Bard", className: "Bard" }));
+      await party.characters.create(characterInput({ name: "Bard", className: "Bard" }));
       await seedStable();
       fetchMock.mockResolvedValue(controllableChatStream().response);
       await renderChat();
@@ -274,7 +281,7 @@ describe("ChatScreen", () => {
   });
 
   it("still answers, without the stable, when it can't be loaded", async () => {
-    vi.spyOn(repo.combatants, "getAll").mockRejectedValue(new Error("blocked"));
+    vi.spyOn(party.combatants, "getAll").mockRejectedValue(new Error("blocked"));
     fetchMock.mockResolvedValue(controllableChatStream().response);
     await renderChat();
     expect(screen.getByRole("alert")).toHaveTextContent("Couldn't load the monster stable");
@@ -286,7 +293,7 @@ describe("ChatScreen", () => {
 
   it("streams the assistant reply delta by delta, grounded in the party and monster", async () => {
     await seedParty();
-    setLastViewedMonster(goblin);
+    setLastViewedMonster(party.partyProfileId, goblin);
     const stream = controllableChatStream();
     fetchMock.mockResolvedValue(stream.response);
     await renderChat();
@@ -410,7 +417,7 @@ describe("ChatScreen", () => {
   });
 
   it("still sends when an incomplete monster is in storage", async () => {
-    sessionStorage.setItem(LAST_MONSTER_STORAGE_KEY, JSON.stringify({ name: "Goblin", actions: [] }));
+    sessionStorage.setItem(lastMonsterStorageKey(party.partyProfileId), JSON.stringify({ name: "Goblin", actions: [] }));
     // Fresh app modules read storage the way a reloaded tab would.
     vi.resetModules();
     const { ChatScreen: FreshChatScreen } = await import("./chat-screen");
@@ -430,7 +437,7 @@ describe("ChatScreen", () => {
   });
 
   it("answers without the monster when its context can't be built", async () => {
-    setLastViewedMonster(goblin);
+    setLastViewedMonster(party.partyProfileId, goblin);
     vi.mocked(buildSystemContext).mockImplementationOnce(() => {
       throw new TypeError("Cannot read properties of undefined (reading 'map')");
     });
@@ -522,5 +529,85 @@ describe("ChatScreen", () => {
     expect(items).toHaveLength(2);
     expect(items[0]).toHaveTextContent("YouHi");
     expect(items[1]).toHaveTextContent("AssistantHello, DM.");
+  });
+
+  describe("per-party history", () => {
+    it("persists answered turns to the active party and restores them on load", async () => {
+      const stream = controllableChatStream();
+      fetchMock.mockResolvedValueOnce(stream.response);
+      const { unmount } = render(<ChatScreen repo={repo} fetchImpl={fetchMock} />);
+      await screen.findByText(/^Using:/);
+
+      ask("Q1");
+      stream.delta("A1");
+      stream.done();
+      await waitFor(async () =>
+        expect((await party.chat.list()).map(({ role, content }) => ({ role, content }))).toEqual([
+          { role: "user", content: "Q1" },
+          { role: "assistant", content: "A1" },
+        ]),
+      );
+      unmount();
+
+      // A fresh mount restores the conversation and sends it as history.
+      const next = controllableChatStream();
+      fetchMock.mockResolvedValueOnce(next.response);
+      await renderChat();
+      expect(await within(log()).findByText("A1")).toBeInTheDocument();
+      expect(within(log()).getByText("Q1")).toBeInTheDocument();
+      ask("Q2");
+      expect(sentBody(1).messages.slice(1)).toEqual([
+        { role: "user", content: "Q1" },
+        { role: "assistant", content: "A1" },
+        { role: "user", content: "Q2" },
+      ]);
+    });
+
+    it("does not persist failed turns", async () => {
+      fetchMock.mockResolvedValueOnce(aiErrorJson("timeout", 504));
+      await renderChat();
+      ask("Failed question");
+      await screen.findByRole("alert");
+      expect(await party.chat.list()).toEqual([]);
+    });
+
+    it("clears the stored conversation", async () => {
+      await party.chat.append({ role: "user", content: "Old question" });
+      await party.chat.append({ role: "assistant", content: "Old answer" });
+      await renderChat();
+      await within(log()).findByText("Old answer");
+
+      fireEvent.click(screen.getByRole("button", { name: "Clear conversation" }));
+      expect(within(log()).queryByText("Old answer")).not.toBeInTheDocument();
+      await waitFor(async () => expect(await party.chat.list()).toEqual([]));
+    });
+
+    it("switches party, stable, history and last monster with the active party", async () => {
+      await party.characters.create(characterInput({ name: "Brakka" }));
+      await party.chat.append({ role: "user", content: "Party A question" });
+      await party.chat.append({ role: "assistant", content: "Party A answer" });
+      setLastViewedMonster(party.partyProfileId, goblin);
+
+      const { user } = await activateDefaultParty(repo);
+      const other = await createParty(repo, user.id, "Curse of Strahd");
+      await other.scope.combatants.addFromMonster(goblin);
+      await other.scope.chat.append({ role: "user", content: "Party B question" });
+      await other.scope.chat.append({ role: "assistant", content: "Party B answer" });
+
+      await renderChat();
+      expect(screen.getByText("Using: party (1) · no stable · Goblin")).toBeInTheDocument();
+      expect(await within(log()).findByText("Party A answer")).toBeInTheDocument();
+
+      await act(() => setActiveParty(other.partyProfile.id, repo));
+      expect(await screen.findByText("Party B answer")).toBeInTheDocument();
+      expect(within(log()).queryByText("Party A answer")).not.toBeInTheDocument();
+      expect(screen.getByText("Using: no party · stable (1) · no monster")).toBeInTheDocument();
+
+      // @mention candidates come from the active party only.
+      fireEvent.change(input(), { target: { value: "@Bra" } });
+      expect(screen.queryByRole("option", { name: /Brakka/ })).not.toBeInTheDocument();
+      fireEvent.change(input(), { target: { value: "@Gob" } });
+      expect(screen.getByRole("option", { name: /Goblin/ })).toBeInTheDocument();
+    });
   });
 });

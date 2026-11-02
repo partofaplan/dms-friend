@@ -7,10 +7,12 @@ import {
   CONDITIONS,
   SKILLS,
   repository as defaultRepository,
+  type AppRepository,
   type Character,
   type CharacterInput,
-  type Repository,
+  type PartyScopedRepository,
 } from "@/lib/db";
+import { activePartyScope } from "@/lib/profiles/active-profile";
 import {
   formatLabel,
   toFormValues,
@@ -36,8 +38,13 @@ export type CharacterFormProps = {
   characterId?: string;
   onSaved?: (character: Character) => void;
   onCancel?: () => void;
+  /**
+   * The party to save into. When omitted, the active party is resolved from
+   * `repo` at save time (new characters join the active party).
+   */
+  scope?: PartyScopedRepository;
   /** Injectable for tests; defaults to the app-wide IndexedDB repository. */
-  repo?: Repository;
+  repo?: AppRepository;
 };
 
 type NumericField = "level" | "armorClass" | "passivePerception";
@@ -50,6 +57,7 @@ export function CharacterForm({
   characterId,
   onSaved,
   onCancel,
+  scope,
   repo = defaultRepository,
 }: CharacterFormProps) {
   const idPrefix = useId();
@@ -120,15 +128,16 @@ export function CharacterForm({
     savingRef.current = true;
     setSaving(true);
     try {
+      const { characters } = scope ?? (await activePartyScope(repo));
       const saved = isEdit
-        ? await repo.characters.update(characterId, {
+        ? await characters.update(characterId, {
             ...input,
             // Explicit so clearing an optional field overwrites the stored value.
             race: data.race,
             passivePerception: data.passivePerception,
             notes: data.notes,
           })
-        : await repo.characters.create(input);
+        : await characters.create(input);
       onSaved?.(saved);
     } catch (error) {
       setSaveError(

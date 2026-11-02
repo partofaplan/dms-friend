@@ -14,8 +14,8 @@ import { OfflineNotice } from "@/components/offline-status";
 import type { CharacterDraft } from "@/lib/character-form-values";
 import {
   repository as defaultRepository,
+  type AppRepository,
   type Character,
-  type Repository,
 } from "@/lib/db";
 import { extractCharacter } from "@/lib/scan/extract-client";
 import {
@@ -29,8 +29,11 @@ import { isOnline, useOnlineStatus } from "@/lib/pwa/online-status";
 import { assessDraft, fieldLabel, mapExtraction } from "@/lib/scan/map-extraction";
 
 export type ScanScreenProps = {
-  /** Injectable for tests; defaults to the app-wide IndexedDB repository. */
-  repo?: Repository;
+  /**
+   * Injectable for tests; defaults to the app-wide IndexedDB repository. Saved
+   * characters join the active party.
+   */
+  repo?: AppRepository;
   /** Image preparation before upload; defaults to client-side downscaling. */
   prepareImage?: (dataUrl: string) => Promise<string>;
   /** Injectable for tests; defaults to the global fetch. */

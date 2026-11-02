@@ -1,7 +1,8 @@
 import { CONDITIONS } from "@/lib/db/schema";
 import { normalizeMonster } from "@/lib/monsters/types";
 import { goblinRaw, guardianRaw } from "@/test-utils/open5e-fixtures";
-import { createTestRepository } from "@/test-utils/repository";
+import { setActiveParty } from "@/lib/profiles/active-profile";
+import { activateDefaultParty, createParty, createTestRepository } from "@/test-utils/repository";
 
 import {
   describeCombatant,
@@ -18,6 +19,22 @@ const goblin = normalizeMonster(goblinRaw)!;
 const guardian = normalizeMonster(guardianRaw)!;
 
 describe("combat state", () => {
+  it("reads only the active party's stable", async () => {
+    const repo = createTestRepository();
+    try {
+      const { user, scope } = await activateDefaultParty(repo);
+      const other = await createParty(repo, user.id, "Curse of Strahd");
+      await scope.combatants.addFromMonster(goblin);
+      await other.scope.combatants.addFromMonster(guardian);
+
+      expect((await getCombatState(repo)).map((c) => c.name)).toEqual(["Goblin"]);
+      await setActiveParty(other.partyProfile.id, repo);
+      expect((await getCombatState(repo)).map((c) => c.name)).toEqual(["Vault Guardian"]);
+    } finally {
+      repo.db.close();
+    }
+  });
+
   it("reads the stable's live HP and conditions in one call", async () => {
     const repo = createTestRepository();
     try {

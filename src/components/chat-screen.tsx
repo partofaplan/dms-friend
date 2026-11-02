@@ -36,16 +36,19 @@ import {
 import { CHAT_ERROR_MESSAGES, streamChat, type ChatErrorKind } from "@/lib/chat/stream-client";
 import {
   repository as defaultRepository,
+  type AppRepository,
   type Character,
+  type ChatMessageRecord,
   type Combatant,
-  type Repository,
+  type PartyScopedRepository,
 } from "@/lib/db";
 import type { MonsterStatBlock } from "@/lib/monsters/types";
+import { useActiveProfile } from "@/lib/profiles/active-profile";
 import { useOnlineStatus } from "@/lib/pwa/online-status";
 
 export type ChatScreenProps = {
   /** Injectable for tests; defaults to the app-wide IndexedDB repository. */
-  repo?: Repository;
+  repo?: AppRepository;
   /** Injectable for tests; defaults to the global fetch. */
   fetchImpl?: typeof fetch;
 };
@@ -71,6 +74,51 @@ function historyFrom(turns: readonly Turn[]): HistoryMessage[] {
     ]);
 }
 
+/**
+ * Stored messages back into turns: each user message with the assistant reply
+ * that follows it. Anything unpaired (a write cut short) is dropped, so the
+ * history sent to the model always alternates.
+ */
+function turnsFrom(records: readonly ChatMessageRecord[]): Turn[] {
+  const turns: Turn[] = [];
+  for (let i = 0; i < records.length - 1; i++) {
+    const [question, reply] = [records[i], records[i + 1]];
+    if (question.role !== "user" || reply.role !== "assistant") continue;
+    turns.push({
+      id: question.id,
+      question: question.content,
+      mentions: [],
+      answer: reply.content,
+      status: "done",
+    });
+    i++;
+  }
+  return turns;
+}
+
+/**
+ * Chat with the assistant, grounded in and persisted to the active party.
+ * Switching parties remounts the conversation (aborting any streaming answer)
+ * and restores that party's history.
+ */
+export function ChatScreen({ repo = defaultRepository, fetchImpl }: ChatScreenProps) {
+  const active = useActiveProfile(repo);
+  if (!active.scope) {
+    return (
+      <div className="chat-screen">
+        {active.error ? (
+          <p role="alert" className="chat-screen__error">
+            {active.error}
+          </p>
+        ) : (
+          <p className="chat-screen__context">Loading party…</p>
+        )}
+      </div>
+    );
+  }
+  return <PartyChat key={active.scope.partyProfileId} scope={active.scope} fetchImpl={fetchImpl} />;
+}
+
 /*
  * Flow: sending appends a turn and streams its answer delta by delta. Only one
  * answer streams at a time (send and retry are disabled meanwhile); clearing
@@ -88,18 +136,32 @@ function historyFrom(turns: readonly Turn[]): HistoryMessage[] {
  * party members and combatants; arrows move, Enter/Tab (or a click) inserts
  * "@<token>" and records the pick, Escape dismisses. While the listbox is
  * open, Enter tags instead of sending.
+ *
+ * Persistence: the party's stored conversation is restored on mount (Send
+ * waits for it). Each answered turn is appended (question, then answer) once
+ * its stream completes; failed turns stay on screen only. Clearing deletes
+ * the stored conversation. History writes run one at a time, in order.
  */
-export function ChatScreen({ repo = defaultRepository, fetchImpl }: ChatScreenProps) {
+function PartyChat({
+  scope: repo,
+  fetchImpl,
+}: {
+  scope: PartyScopedRepository;
+  fetchImpl?: typeof fetch;
+}) {
   const inputId = useId();
   const hintId = useId();
   const offlineId = useId();
   const listboxId = useId();
   const online = useOnlineStatus();
-  const lastMonster = useLastViewedMonster();
+  const lastMonster = useLastViewedMonster(repo.partyProfileId);
   const [party, setParty] = useState<Character[] | null>(null);
   const [partyError, setPartyError] = useState(false);
   const [combatants, setCombatants] = useState<Combatant[] | null>(null);
   const [stableError, setStableError] = useState(false);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const historyWrites = useRef<Promise<void>>(Promise.resolve());
   const [turns, setTurns] = useState<Turn[]>([]);
   const [draft, setDraft] = useState("");
   const [caret, setCaret] = useState(0);
@@ -133,10 +195,32 @@ export function ChatScreen({ repo = defaultRepository, fetchImpl }: ChatScreenPr
         setStableError(true);
       },
     );
+    repo.chat.list().then(
+      (records) => {
+        if (!active) return;
+        setTurns(turnsFrom(records));
+        setHistoryLoaded(true);
+      },
+      () => {
+        if (!active) return;
+        setHistoryLoaded(true);
+        setHistoryError("Couldn't load the earlier conversation.");
+      },
+    );
     return () => {
       active = false;
     };
   }, [repo]);
+
+  /** Queues a history write after any earlier ones; a failure is reported, not thrown. */
+  function persist(write: () => Promise<unknown>, failure: string) {
+    historyWrites.current = historyWrites.current
+      .then(write)
+      .then(
+        () => undefined,
+        () => setHistoryError(failure),
+      );
+  }
 
   useEffect(() => () => controllerRef.current?.abort(), []);
 
@@ -148,7 +232,7 @@ export function ChatScreen({ repo = defaultRepository, fetchImpl }: ChatScreenPr
     inputRef.current?.setSelectionRange(position, position);
   }, [draft]);
 
-  const loaded = party !== null && combatants !== null;
+  const loaded = party !== null && combatants !== null && historyLoaded;
   const streaming = turns.some((turn) => turn.status === "streaming");
   const question = draft.trim();
   const canSend = online && loaded && !streaming && question.length > 0;
@@ -226,6 +310,12 @@ export function ChatScreen({ repo = defaultRepository, fetchImpl }: ChatScreenPr
         },
       });
       if (controller.signal.aborted) return;
+      if (result.ok) {
+        persist(async () => {
+          await repo.chat.append({ role: "user", content: turn.question });
+          await repo.chat.append({ role: "assistant", content: result.text });
+        }, "Couldn't save the latest answer; it won't be here next time.");
+      }
       updateTurn(turn.id, (t) =>
         result.ok
           ? { ...t, answer: result.text, status: "done" }
@@ -271,6 +361,8 @@ export function ChatScreen({ repo = defaultRepository, fetchImpl }: ChatScreenPr
   function clear() {
     controllerRef.current?.abort();
     setTurns([]);
+    setHistoryError(null);
+    persist(() => repo.chat.clear(), "Couldn't clear the saved conversation.");
     inputRef.current?.focus();
   }
 
@@ -356,6 +448,11 @@ export function ChatScreen({ repo = defaultRepository, fetchImpl }: ChatScreenPr
       {stableError && (
         <p role="alert" className="chat-screen__error">
           Couldn&apos;t load the monster stable, so answers won&apos;t include the fight.
+        </p>
+      )}
+      {historyError && (
+        <p role="alert" className="chat-screen__error">
+          {historyError}
         </p>
       )}
 
