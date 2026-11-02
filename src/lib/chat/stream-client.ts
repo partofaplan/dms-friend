@@ -86,8 +86,14 @@ function parseEvent(data: string): ChatStreamEvent | null {
  */
 export function createSseParser(): (text: string) => ChatStreamEvent[] {
   let buffer = "";
+  // A trailing "\r" may be the first half of a CRLF split across chunks, so
+  // it is held back until the next chunk shows whether "\n" follows.
+  let carriageReturn = false;
   return (text) => {
-    buffer += text.replace(/\r\n?/g, "\n");
+    let input = (carriageReturn ? "\r" : "") + text;
+    carriageReturn = input.endsWith("\r");
+    if (carriageReturn) input = input.slice(0, -1);
+    buffer += input.replace(/\r\n?/g, "\n");
     const events: ChatStreamEvent[] = [];
     let boundary: number;
     while ((boundary = buffer.indexOf("\n\n")) !== -1) {

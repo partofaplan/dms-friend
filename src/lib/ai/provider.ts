@@ -45,8 +45,10 @@ export interface AiProvider {
   /**
    * Streaming variant of chat: yields non-empty text deltas in order. Setup
    * failures (e.g. missing key) surface as an AiError from the first next();
-   * later failures as an AiError mid-iteration. Ending iteration early (via
-   * return()) aborts the upstream request.
+   * later failures as an AiError mid-iteration — including an upstream that
+   * ends without signalling completion. Aborting `signal` (which also
+   * interrupts a pending next()) or ending iteration early via return()
+   * aborts the upstream request.
    */
   chatStream(request: ChatRequest): AsyncIterable<ChatStreamChunk>;
   extractCharacter(request: ExtractCharacterRequest): Promise<ExtractCharacterResult>;

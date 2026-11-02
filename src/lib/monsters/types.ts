@@ -124,6 +124,52 @@ export interface MonsterStatBlock extends MonsterSummary {
   legendaryActions: MonsterFeature[];
 }
 
+const monsterFeatureSchema = z.object({ name: z.string(), desc: z.string() });
+const monsterBonusSchema = z.object({ name: z.string(), bonus: z.number() });
+
+/**
+ * The complete MonsterStatBlock shape, for re-validating stat blocks that
+ * round-trip through untrusted storage (e.g. sessionStorage).
+ */
+export const monsterStatBlockSchema: z.ZodType<MonsterStatBlock> = z.object({
+  slug: z.string(),
+  name: z.string(),
+  size: z.string(),
+  type: z.string(),
+  cr: z.number().nullable(),
+  challengeRating: z.string().nullable(),
+  subtype: z.string(),
+  alignment: z.string(),
+  armorClass: z.number().nullable(),
+  armorDesc: z.string(),
+  hitPoints: z.number().nullable(),
+  hitDice: z.string(),
+  speed: z.array(z.object({ mode: z.string(), feet: z.number() })),
+  hover: z.boolean(),
+  abilities: z.object({
+    strength: z.number().nullable(),
+    dexterity: z.number().nullable(),
+    constitution: z.number().nullable(),
+    intelligence: z.number().nullable(),
+    wisdom: z.number().nullable(),
+    charisma: z.number().nullable(),
+  }),
+  savingThrows: z.array(monsterBonusSchema),
+  skills: z.array(monsterBonusSchema),
+  damageVulnerabilities: z.string(),
+  damageResistances: z.string(),
+  damageImmunities: z.string(),
+  conditionImmunities: z.string(),
+  senses: z.string(),
+  languages: z.string(),
+  specialAbilities: z.array(monsterFeatureSchema),
+  actions: z.array(monsterFeatureSchema),
+  bonusActions: z.array(monsterFeatureSchema),
+  reactions: z.array(monsterFeatureSchema),
+  legendaryDesc: z.string(),
+  legendaryActions: z.array(monsterFeatureSchema),
+});
+
 /** GET /api/monsters?search= 200 response body. Empty `results` is not an error. */
 export interface MonsterSearchResponseBody {
   results: MonsterSummary[];

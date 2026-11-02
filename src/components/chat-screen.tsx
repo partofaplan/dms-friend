@@ -10,6 +10,7 @@ import {
   type KeyboardEvent,
 } from "react";
 
+import type { ChatMessage } from "@/lib/ai/contracts";
 import {
   assembleChatMessages,
   buildSystemContext,
@@ -17,8 +18,9 @@ import {
   type HistoryMessage,
 } from "@/lib/chat/context";
 import { useLastViewedMonster } from "@/lib/chat/last-monster";
-import { streamChat, type ChatErrorKind } from "@/lib/chat/stream-client";
+import { CHAT_ERROR_MESSAGES, streamChat, type ChatErrorKind } from "@/lib/chat/stream-client";
 import { repository as defaultRepository, type Character, type Repository } from "@/lib/db";
+import type { MonsterStatBlock } from "@/lib/monsters/types";
 
 export type ChatScreenProps = {
   /** Injectable for tests; defaults to the app-wide IndexedDB repository. */
@@ -97,11 +99,34 @@ export function ChatScreen({ repo = defaultRepository, fetchImpl }: ChatScreenPr
     const controller = new AbortController();
     controllerRef.current = controller;
 
-    const messages = assembleChatMessages({
-      systemContext: buildSystemContext({ party: party ?? [], lastMonster }),
-      history: historyFrom(earlier),
-      userMessage: turn.question,
-    });
+    const fail = (kind: ChatErrorKind) =>
+      updateTurn(turn.id, (t) => ({
+        ...t,
+        status: "error",
+        error: { kind, message: CHAT_ERROR_MESSAGES[kind], interrupted: t.answer.length > 0 },
+      }));
+    const assemble = (monster: MonsterStatBlock | null) =>
+      assembleChatMessages({
+        systemContext: buildSystemContext({ party: party ?? [], lastMonster: monster }),
+        history: historyFrom(earlier),
+        userMessage: turn.question,
+      });
+
+    // The turn is already marked streaming, so nothing here may throw past us
+    // and leave Send/Retry disabled. If the monster context can't be built,
+    // answer without it; if nothing can be built, fail the turn (retryable).
+    let messages: ChatMessage[];
+    try {
+      messages = assemble(lastMonster);
+    } catch {
+      try {
+        messages = assemble(null);
+      } catch {
+        fail("bad_request");
+        return;
+      }
+    }
+
     try {
       const result = await streamChat(messages, {
         signal: controller.signal,
@@ -124,7 +149,9 @@ export function ChatScreen({ repo = defaultRepository, fetchImpl }: ChatScreenPr
             },
       );
     } catch {
-      // Aborted by clearing the conversation or unmounting.
+      // Aborted by clearing the conversation or unmounting; anything else must
+      // still end the turn so the controls come back.
+      if (!controller.signal.aborted) fail("network");
     }
   }
 

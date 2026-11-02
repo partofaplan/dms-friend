@@ -137,21 +137,48 @@ export function encodeChatStreamEvent(event: ChatStreamEvent): string {
 }
 
 /**
+ * An AbortController owned by a streaming route. It aborts when the incoming
+ * request's signal does, and the route aborts it itself when the response is
+ * cancelled; the provider gets `controller.signal`, so either event tears
+ * down the upstream request.
+ */
+export function upstreamAbortController(requestSignal: AbortSignal): AbortController {
+  const controller = new AbortController();
+  const onRequestAbort = () => controller.abort(requestSignal.reason);
+  if (requestSignal.aborted) {
+    onRequestAbort();
+  } else {
+    requestSignal.addEventListener("abort", onRequestAbort, { once: true });
+    // However we end up aborted, drop the listener so it can't leak.
+    controller.signal.addEventListener(
+      "abort",
+      () => requestSignal.removeEventListener("abort", onRequestAbort),
+      { once: true },
+    );
+  }
+  return controller;
+}
+
+/**
  * Wraps an already-started chat stream as a Server-Sent Events response.
  * `first` is the delta the caller pulled to confirm the stream started (so
  * setup failures could still become normal JSON error responses). Each later
  * delta is pulled on demand; completion sends `done`, and a failure sends one
  * `error` frame with the fixed public message — never upstream text — before
- * closing. Cancelling the response (client disconnect) ends the iterator,
- * which aborts the upstream request.
+ * closing. `upstream` must own the signal the provider stream was started
+ * with: cancelling the response (client disconnect) aborts it, which
+ * interrupts even a read blocked on the upstream — iterator.return() alone
+ * would queue behind that pending next().
  */
 export function chatStreamResponse(
   first: ChatStreamChunk,
   iterator: AsyncIterator<ChatStreamChunk>,
+  upstream: AbortController,
   route: string,
 ): Response {
   const encoder = new TextEncoder();
   let pending: ChatStreamChunk | undefined = first;
+  let cancelled = false;
   const send = (controller: ReadableStreamDefaultController<Uint8Array>, event: ChatStreamEvent) =>
     controller.enqueue(encoder.encode(encodeChatStreamEvent(event)));
 
@@ -164,19 +191,29 @@ export function chatStreamResponse(
       }
       try {
         const next = await iterator.next();
+        if (cancelled) return;
         if (next.done) {
+          upstream.abort(); // Already finished; this just releases the request listener.
           send(controller, { type: "done" });
           controller.close();
         } else {
           send(controller, { type: "delta", delta: next.value.delta });
         }
       } catch (error) {
+        // After a cancel there is no reader left, and the abort is expected.
+        if (cancelled) return;
+        upstream.abort();
         send(controller, { type: "error", error: publicAiError(error, route) });
         controller.close();
       }
     },
-    async cancel() {
-      await iterator.return?.();
+    cancel() {
+      cancelled = true;
+      // Abort first, so a blocked upstream read is interrupted. Then end the
+      // iterator without awaiting: return() settles only after a pending
+      // next() does.
+      upstream.abort();
+      Promise.resolve(iterator.return?.()).catch(() => {});
     },
   });
 

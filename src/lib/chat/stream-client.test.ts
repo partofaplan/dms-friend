@@ -15,6 +15,16 @@ describe("createSseParser", () => {
     ]);
   });
 
+  it("treats a CRLF split between chunks as one line break", () => {
+    const parse = createSseParser();
+    expect(parse('event: delta\r')).toEqual([]);
+    expect(parse('\ndata: {"type":"delta",\r')).toEqual([]);
+    // Were each half normalized separately, this "\n" would end the frame early.
+    expect(parse('\ndata: "delta":"a"}\r\n\r')).toEqual([]);
+    expect(parse("\n")).toEqual([{ type: "delta", delta: "a" }]);
+    expect(parse('event: done\r\ndata: {"type":"done"}\r\n\r\n')).toEqual([{ type: "done" }]);
+  });
+
   it("ignores malformed frames and replaces server error text with a fixed message", () => {
     const parse = createSseParser();
     expect(

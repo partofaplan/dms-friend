@@ -137,19 +137,28 @@ describe("OpenAiProvider.chat", () => {
 });
 
 describe("OpenAiProvider.chatStream", () => {
-  function chunk(content: string | undefined): ChatCompletionChunk {
+  function chunk(
+    content: string | undefined,
+    finishReason: ChatCompletionChunk.Choice["finish_reason"] = null,
+  ): ChatCompletionChunk {
     return {
       id: "chatcmpl-test",
       object: "chat.completion.chunk",
       created: 0,
       model: DEFAULT_OPENAI_MODEL,
-      choices: [{ index: 0, delta: { content }, finish_reason: null, logprobs: null }],
+      choices: [{ index: 0, delta: { content }, finish_reason: finishReason, logprobs: null }],
     };
   }
 
-  async function* sdkStream(contents: (string | undefined)[], error?: unknown) {
+  /** An SDK stream of `contents`, then a finishing chunk unless it fails or is truncated. */
+  async function* sdkStream(
+    contents: (string | undefined)[],
+    error?: unknown,
+    { truncated = false } = {},
+  ) {
     for (const content of contents) yield chunk(content);
     if (error) throw error;
+    if (!truncated) yield chunk(undefined, "stop");
   }
 
   function streamSetup(stream: () => AsyncIterable<ChatCompletionChunk>, apiKey: string | undefined = FAKE_KEY) {
@@ -206,6 +215,28 @@ describe("OpenAiProvider.chatStream", () => {
     expect(seen).toEqual(["partial"]);
     expect(error).toBeInstanceOf(AiError);
     expect((error as AiError).kind).toBe("timeout");
+  });
+
+  it("reports a stream that ends without a finish_reason as an error after its deltas", async () => {
+    const { provider } = streamSetup(() => sdkStream(["partial"], undefined, { truncated: true }));
+    const seen: string[] = [];
+    const error = await (async () => {
+      for await (const { delta } of provider.chatStream({ messages: [{ role: "user", content: "hi" }] })) {
+        seen.push(delta);
+      }
+    })().catch((e: unknown) => e);
+    expect(seen).toEqual(["partial"]);
+    expect(error).toBeInstanceOf(AiError);
+    expect((error as AiError).kind).toBe("provider_error");
+  });
+
+  it("accepts a length-limited reply as complete", async () => {
+    const { provider } = streamSetup(async function* () {
+      yield chunk("cut by max tokens", "length");
+    });
+    expect(await collect(provider.chatStream({ messages: [{ role: "user", content: "hi" }] }))).toEqual([
+      "cut by max tokens",
+    ]);
   });
 });
 

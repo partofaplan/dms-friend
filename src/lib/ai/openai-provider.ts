@@ -117,13 +117,22 @@ export class OpenAiProvider implements AiProvider {
     }
     // Leaving this loop early (the consumer calls return()) ends the SDK
     // stream, which aborts the upstream HTTP request.
+    // The SDK ends iteration quietly when the connection closes early (no
+    // [DONE]), so a reply only counts as complete once a choice reports a
+    // finish_reason.
+    let finished = false;
     try {
       for await (const chunk of stream) {
-        const delta = chunk.choices[0]?.delta?.content;
+        const choice = chunk.choices[0];
+        if (choice?.finish_reason) finished = true;
+        const delta = choice?.delta?.content;
         if (delta) yield { delta };
       }
     } catch (error) {
       throw toAiError(error);
+    }
+    if (!finished) {
+      throw new AiError("provider_error", "OpenAI stream ended before the reply finished");
     }
   }
 

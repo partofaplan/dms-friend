@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 
-import type { MonsterStatBlock } from "@/lib/monsters/types";
+import { monsterStatBlockSchema, type MonsterStatBlock } from "@/lib/monsters/types";
 
 /*
  * Remembers the last monster stat block the DM opened, so the chat assistant
@@ -25,14 +25,10 @@ function readStored(): MonsterStatBlock | null {
   try {
     const raw = storage()?.getItem(LAST_MONSTER_STORAGE_KEY);
     if (!raw) return null;
-    const value: unknown = JSON.parse(raw);
-    // Our own data; a light shape check guards against stale/foreign values.
-    const ok =
-      typeof value === "object" &&
-      value !== null &&
-      typeof (value as MonsterStatBlock).name === "string" &&
-      Array.isArray((value as MonsterStatBlock).actions);
-    return ok ? (value as MonsterStatBlock) : null;
+    // Storage is user-editable and can be stale: anything that isn't a
+    // complete stat block counts as no monster, so it can't break the chat.
+    const result = monsterStatBlockSchema.safeParse(JSON.parse(raw));
+    return result.success ? result.data : null;
   } catch {
     return null;
   }
@@ -43,8 +39,12 @@ export function getLastViewedMonster(): MonsterStatBlock | null {
   return current;
 }
 
-/** Records (or with null, forgets) the last-viewed monster. */
+/**
+ * Records (or with null, forgets) the last-viewed monster. A value that isn't
+ * a complete stat block is treated as null.
+ */
 export function setLastViewedMonster(monster: MonsterStatBlock | null): void {
+  if (monster && !monsterStatBlockSchema.safeParse(monster).success) monster = null;
   current = monster;
   try {
     if (monster) storage()?.setItem(LAST_MONSTER_STORAGE_KEY, JSON.stringify(monster));

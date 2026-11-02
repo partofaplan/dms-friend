@@ -1,12 +1,16 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ChatCompletionChunk } from "openai/resources/chat/completions";
 import {
   MAX_CHAT_BODY_BYTES,
   type AiErrorResponseBody,
+  type ChatMessage,
   type ChatStreamEvent,
 } from "@/lib/ai/contracts";
-import { AiError } from "@/lib/ai/errors";
+import { AI_ERROR_PUBLIC_MESSAGE, AiError } from "@/lib/ai/errors";
+import { OpenAiProvider } from "@/lib/ai/openai-provider";
 import type { AiProvider, ChatStreamChunk } from "@/lib/ai/provider";
+import { CHAT_ERROR_MESSAGES, streamChat } from "@/lib/chat/stream-client";
 import { POST } from "./chat/stream/route";
 
 const provider = {
@@ -191,6 +195,113 @@ describe("POST /api/ai/chat/stream", () => {
     await reader.cancel();
 
     expect(finished).toBe(true);
+  });
+
+  /**
+   * A provider stream whose second read blocks like a real upstream read that
+   * is waiting on the network: it settles only when its signal aborts.
+   */
+  function blockingStream() {
+    const state = { signal: undefined as AbortSignal | undefined, cleanedUp: false };
+    provider.chatStream.mockImplementation(({ signal }) =>
+      (async function* () {
+        state.signal = signal;
+        try {
+          yield { delta: "one" };
+          await new Promise<never>((_, reject) => {
+            const abort = () => reject(new AiError("timeout", "aborted"));
+            if (signal?.aborted) abort();
+            signal?.addEventListener("abort", abort, { once: true });
+          });
+        } finally {
+          state.cleanedUp = true;
+        }
+      })(),
+    );
+    return state;
+  }
+
+  it("aborts a blocked upstream read when the client cancels the response", async () => {
+    const upstream = blockingStream();
+    const reader = (await POST(post(validBody))).body!.getReader();
+
+    expect(await reader.read()).toMatchObject({ done: false });
+    // Pulling the next frame is now stuck inside the provider's next().
+    const stuck = reader.read();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(upstream.signal?.aborted).toBe(false);
+    expect(upstream.cleanedUp).toBe(false);
+
+    await reader.cancel();
+
+    expect(upstream.signal?.aborted).toBe(true);
+    await expect(stuck).resolves.toEqual({ done: true, value: undefined });
+    await vi.waitFor(() => expect(upstream.cleanedUp).toBe(true));
+    // A client disconnect is not a provider failure worth logging.
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
+  it("aborts the upstream when the incoming request is aborted", async () => {
+    const upstream = blockingStream();
+    const client = new AbortController();
+    const request = new Request(post(validBody), { signal: client.signal });
+
+    const reader = (await POST(request)).body!.getReader();
+    await reader.read();
+    const next = reader.read();
+    client.abort();
+
+    expect(upstream.signal?.aborted).toBe(true);
+    await vi.waitFor(() => expect(upstream.cleanedUp).toBe(true));
+    await reader.cancel();
+    await next.catch(() => {});
+  });
+
+  it("reports an upstream that ends without completing as an error, not done", async () => {
+    const truncated: ChatCompletionChunk = {
+      id: "chatcmpl-test",
+      object: "chat.completion.chunk",
+      created: 0,
+      model: "gpt-4o",
+      choices: [{ index: 0, delta: { content: "Half cover gives +2" }, finish_reason: null, logprobs: null }],
+    };
+    // The real OpenAI provider over an SDK stream that hits EOF early.
+    const openai = new OpenAiProvider({
+      apiKey: SECRET_KEY,
+      createClient: () => ({
+        chat: {
+          completions: {
+            create: async () =>
+              (async function* () {
+                yield truncated;
+              })(),
+          },
+        },
+      }),
+    });
+    provider.chatStream.mockImplementation((request) => openai.chatStream(request));
+
+    const { text, events } = await readEvents(await POST(post(validBody)));
+    expect(events).toEqual([
+      { type: "delta", delta: "Half cover gives +2" },
+      {
+        type: "error",
+        error: { kind: "provider_error", message: AI_ERROR_PUBLIC_MESSAGE.provider_error },
+      },
+    ]);
+    expect(text).not.toContain("ended before");
+
+    // The browser client keeps the partial text but does not call it a success.
+    const result = await streamChat(validBody.messages as ChatMessage[], {
+      fetchImpl: async () => POST(post(validBody)),
+    });
+    expect(result).toEqual({
+      ok: false,
+      kind: "provider_error",
+      message: CHAT_ERROR_MESSAGES.provider_error,
+      interrupted: true,
+      text: "Half cover gives +2",
+    });
   });
 });
 

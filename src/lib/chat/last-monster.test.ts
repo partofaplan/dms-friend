@@ -40,6 +40,30 @@ describe("last-viewed monster store", () => {
     sessionStorage.clear();
   });
 
+  it("discards a stored value that is not a complete stat block", async () => {
+    sessionStorage.setItem(
+      LAST_MONSTER_STORAGE_KEY,
+      JSON.stringify({ name: "Goblin", actions: [] }),
+    );
+    vi.resetModules();
+    expect((await import("./last-monster")).getLastViewedMonster()).toBeNull();
+
+    sessionStorage.setItem(
+      LAST_MONSTER_STORAGE_KEY,
+      JSON.stringify({ ...goblin, speed: undefined }),
+    );
+    vi.resetModules();
+    expect((await import("./last-monster")).getLastViewedMonster()).toBeNull();
+    sessionStorage.clear();
+  });
+
+  it("treats setting an incomplete stat block as forgetting the monster", () => {
+    setLastViewedMonster(goblin);
+    setLastViewedMonster({ name: "Goblin", actions: [] } as unknown as typeof goblin);
+    expect(getLastViewedMonster()).toBeNull();
+    expect(sessionStorage.getItem(LAST_MONSTER_STORAGE_KEY)).toBeNull();
+  });
+
   it("re-renders subscribers when the monster changes", () => {
     const { result } = renderHook(() => useLastViewedMonster());
     expect(result.current).toBeNull();
