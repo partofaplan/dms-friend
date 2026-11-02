@@ -149,6 +149,42 @@ describe("combatants", () => {
       "Goblin",
     ]);
   });
+
+  it("breaks same-millisecond ties by id, deterministically and per party", async () => {
+    const user = (await repo.users.getAll())[0];
+    const otherPartyId = (await repo.partyProfiles.create(user.id, "Table B")).id;
+    // An earlier timestamp with the highest id: createdAt still sorts first.
+    await new DexieRepository({
+      db: repo.db,
+      now: () => "2026-01-01T00:00:59.000Z",
+      generateId: () => makeId(999),
+    })
+      .forParty(partyProfileId)
+      .combatants.create(combatant({ label: "Earliest" }));
+
+    // Every later record shares one timestamp; ids are handed out out of
+    // creation (and insertion) order so only the id tiebreak can sort them.
+    const ids = [makeId(907), makeId(903), makeId(905), makeId(901), makeId(909)];
+    const frozen = new DexieRepository({
+      db: repo.db,
+      now: () => "2026-01-01T00:01:00.000Z",
+      generateId: () => ids.shift()!,
+    });
+    const scope = frozen.forParty(partyProfileId).combatants;
+    for (const label of ["Seven", "Three", "Five", "One"]) {
+      await scope.create(combatant({ label }));
+    }
+    // Same timestamp, other party: must not leak into this party's list.
+    await frozen.forParty(otherPartyId).combatants.create(combatant({ label: "Theirs" }));
+
+    const expected = [makeId(999), makeId(901), makeId(903), makeId(905), makeId(907)];
+    for (let run = 0; run < 3; run++) {
+      const all = await scope.getAll();
+      expect(all.map((c) => c.id)).toEqual(expected);
+      expect(all.map(combatantName)).toEqual(["Earliest", "One", "Three", "Five", "Seven"]);
+      expect(await stable.getAll()).toEqual(all);
+    }
+  });
 });
 
 describe("combatants are scoped to their party profile", () => {

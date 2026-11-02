@@ -136,6 +136,15 @@ function validate<S extends z.ZodType>(
   return result.data;
 }
 
+/**
+ * Order added: createdAt, then id so records stamped in the same millisecond
+ * still come back in one deterministic order.
+ */
+function byCreation(a: Combatant, b: Combatant): number {
+  if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? -1 : 1;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
 /** A party's chat messages, in conversation order. */
 function chatRange(db: DmFriendDb, partyProfileId: string) {
   return db.chatMessages
@@ -252,11 +261,13 @@ export class DexieRepository implements AppRepository {
         addFromMonster: (monster, options) =>
           this.addMonsterToStable(partyProfileId, monster, options),
         getById: async (id) => inScope(await this.db.combatants.get(id)),
-        getAll: () =>
-          this.db.combatants
-            .where("partyProfileId")
-            .equals(partyProfileId)
-            .sortBy("createdAt"),
+        getAll: async () =>
+          (
+            await this.db.combatants
+              .where("partyProfileId")
+              .equals(partyProfileId)
+              .toArray()
+          ).sort(byCreation),
         update: (id, changes) =>
           this.updateCombatant(partyProfileId, id, changes),
         delete: (id) =>
@@ -431,6 +442,9 @@ export class DexieRepository implements AppRepository {
     await this.db.combatants.where("partyProfileId").anyOf(partyIds).delete();
     await this.db.chatMessages.where("partyProfileId").anyOf(partyIds).delete();
     await this.db.partyProfiles.bulkDelete(partyIds);
+    // Drop the cached scopes so the cache only grows with live parties. Harmless
+    // if the transaction later aborts: forParty() just builds a fresh scope.
+    for (const id of partyIds) this.scopes.delete(id);
   }
 
   /** Must be called inside a transaction that includes partyProfiles. */
@@ -463,10 +477,9 @@ export class DexieRepository implements AppRepository {
           user,
           partyProfiles,
           characters: await db.characters.where("partyProfileId").anyOf(ids).toArray(),
-          combatants: await db.combatants
-            .where("partyProfileId")
-            .anyOf(ids)
-            .sortBy("createdAt"),
+          combatants: (
+            await db.combatants.where("partyProfileId").anyOf(ids).toArray()
+          ).sort(byCreation),
           chatMessages,
         };
       },

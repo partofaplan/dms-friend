@@ -13,13 +13,22 @@ import { setActiveParty } from "@/lib/profiles/active-profile";
 
 let dbCounter = 0;
 
-/** A repository over a fresh in-memory IndexedDB, isolated per call. */
+/**
+ * A repository over a fresh in-memory IndexedDB, isolated per call. Ids are
+ * sequential UUIDs so records created in the same millisecond still sort in
+ * creation order (the createdAt, id tiebreak) on every run.
+ */
 export function createTestRepository(): DexieRepository {
   const db = new DmFriendDb(`dm-friend-test-${++dbCounter}`, {
     indexedDB: new IDBFactory(),
     IDBKeyRange,
   });
-  return new DexieRepository({ db });
+  let idCounter = 0;
+  return new DexieRepository({
+    db,
+    generateId: () =>
+      `00000000-0000-4000-8000-${(++idCounter).toString().padStart(12, "0")}`,
+  });
 }
 
 export interface SeededParty {

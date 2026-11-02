@@ -609,5 +609,45 @@ describe("ChatScreen", () => {
       fireEvent.change(input(), { target: { value: "@Gob" } });
       expect(screen.getByRole("option", { name: /Goblin/ })).toBeInTheDocument();
     });
+
+    it("aborts a streaming answer when the active party switches mid-stream", async () => {
+      const { user } = await activateDefaultParty(repo);
+      const other = await createParty(repo, user.id, "Curse of Strahd");
+      await other.scope.chat.append({ role: "user", content: "Party B question" });
+      await other.scope.chat.append({ role: "assistant", content: "Party B answer" });
+      const stream = controllableChatStream();
+      fetchMock.mockResolvedValueOnce(stream.response);
+      const consoleError = vi.spyOn(console, "error");
+
+      await renderChat();
+      ask("Party A question");
+      act(() => stream.delta("Partial A answer"));
+      expect(await within(log()).findByText("Partial A answer")).toBeInTheDocument();
+      const signal = fetchMock.mock.calls[0][1]?.signal;
+
+      await act(() => setActiveParty(other.partyProfile.id, repo));
+      expect(await screen.findByText("Party B answer")).toBeInTheDocument();
+      expect(signal?.aborted).toBe(true);
+      expect(within(log()).queryByText("Partial A answer")).not.toBeInTheDocument();
+      expect(within(log()).queryByText("Party A question")).not.toBeInTheDocument();
+
+      // The abandoned stream finishing late changes nothing and persists nowhere.
+      await act(async () => {
+        try {
+          stream.delta(" and more");
+          stream.done();
+        } catch {
+          // The aborted reader may already have cancelled the body.
+        }
+      });
+      expect(within(log()).queryByText(/and more/)).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
+      expect(await party.chat.list()).toEqual([]);
+      expect((await other.scope.chat.list()).map((m) => m.content)).toEqual([
+        "Party B question",
+        "Party B answer",
+      ]);
+      expect(consoleError).not.toHaveBeenCalled();
+    });
   });
 });

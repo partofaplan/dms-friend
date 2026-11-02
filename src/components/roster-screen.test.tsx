@@ -8,7 +8,7 @@ import {
 } from "@testing-library/react";
 
 import type { CharacterRepository, DexieRepository, PartyScopedRepository } from "@/lib/db";
-import { setActiveParty } from "@/lib/profiles/active-profile";
+import { refreshActiveProfile, setActiveParty } from "@/lib/profiles/active-profile";
 import {
   activateDefaultParty,
   characterInput,
@@ -336,6 +336,55 @@ describe("RosterScreen", () => {
       expect(await screen.findByRole("article", { name: "Ezmerelda" })).toBeInTheDocument();
       expect(screen.queryByRole("article", { name: "Brakka" })).not.toBeInTheDocument();
       expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    });
+
+    it("closes an open editor and re-scopes when the active party is deleted", async () => {
+      const { brakka } = await seed();
+      const { user, partyProfile } = await activateDefaultParty(repo);
+      const other = await createParty(repo, user.id, "Curse of Strahd");
+      await other.scope.characters.create(characterInput({ name: "Ezmerelda" }));
+      const createInB = vi.spyOn(other.scope.characters, "create");
+      const updateInB = vi.spyOn(other.scope.characters, "update");
+      render(<RosterScreen repo={repo} />);
+      await screen.findByRole("article", { name: "Brakka" });
+
+      // A half-finished edit of a party-A character.
+      fireEvent.click(screen.getByRole("button", { name: "Edit Brakka" }));
+      fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Brakka the Bold" } });
+
+      await act(async () => {
+        await repo.partyProfiles.delete(partyProfile.id);
+        await refreshActiveProfile(repo);
+      });
+
+      // The selection heals to the remaining party; the editor is gone with A.
+      expect(await screen.findByRole("article", { name: "Ezmerelda" })).toBeInTheDocument();
+      expect(screen.queryByRole("form")).not.toBeInTheDocument();
+      expect(screen.queryByRole("article", { name: /Brakka/ })).not.toBeInTheDocument();
+      expect(createInB).not.toHaveBeenCalled();
+      expect(updateInB).not.toHaveBeenCalled();
+      expect((await other.scope.characters.getAll()).map((c) => c.name)).toEqual(["Ezmerelda"]);
+      expect(await other.scope.characters.getById(brakka.id)).toBeUndefined();
+
+      // New work lands in the new active party.
+      fireEvent.click(screen.getByRole("button", { name: "Add character" }));
+      for (const [label, value] of [
+        ["Name", "Pip"],
+        ["Class", "Rogue"],
+        ["Armor Class", "14"],
+        ["Max HP", "9"],
+        ["Current HP", "9"],
+      ]) {
+        fireEvent.change(screen.getByLabelText(label), { target: { value } });
+      }
+      fireEvent.click(
+        within(screen.getByRole("form")).getByRole("button", { name: "Add character" }),
+      );
+      await screen.findByRole("article", { name: "Pip" });
+      expect((await other.scope.characters.getAll()).map((c) => c.name).sort()).toEqual([
+        "Ezmerelda",
+        "Pip",
+      ]);
     });
   });
 });

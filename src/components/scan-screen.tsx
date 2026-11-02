@@ -16,7 +16,9 @@ import {
   repository as defaultRepository,
   type AppRepository,
   type Character,
+  type PartyScopedRepository,
 } from "@/lib/db";
+import { useActiveProfile } from "@/lib/profiles/active-profile";
 import { extractCharacter } from "@/lib/scan/extract-client";
 import {
   ACCEPTED_IMAGE_TYPES,
@@ -31,7 +33,7 @@ import { assessDraft, fieldLabel, mapExtraction } from "@/lib/scan/map-extractio
 export type ScanScreenProps = {
   /**
    * Injectable for tests; defaults to the app-wide IndexedDB repository. Saved
-   * characters join the active party.
+   * characters join the party that was active when the scan started.
    */
   repo?: AppRepository;
   /** Image preparation before upload; defaults to client-side downscaling. */
@@ -102,11 +104,55 @@ function reducer(state: ScanState, action: ScanAction): ScanState {
 const OFFLINE_REJECTION =
   "You're offline, so the sheet can't be read. Reconnect to scan, or enter the character manually.";
 
+/**
+ * Scans into the active party. Switching parties remounts the scan, so an
+ * in-progress extraction, review or manual draft is abandoned rather than
+ * saved into the newly active party.
+ */
 export function ScanScreen({
   repo = defaultRepository,
   prepareImage = downscaleImage,
   fetchImpl,
 }: ScanScreenProps) {
+  const active = useActiveProfile(repo);
+  if (!active.scope) {
+    return (
+      <section className="scan" aria-labelledby="scan-title">
+        <h2 id="scan-title" className="scan__title">
+          Scan a character sheet
+        </h2>
+        {active.error ? (
+          <p className="scan__error" role="alert">
+            {active.error}
+          </p>
+        ) : (
+          <p className="scan__status" role="status">
+            Loading party…
+          </p>
+        )}
+      </section>
+    );
+  }
+  return (
+    <PartyScan
+      key={active.scope.partyProfileId}
+      scope={active.scope}
+      prepareImage={prepareImage}
+      fetchImpl={fetchImpl}
+    />
+  );
+}
+
+/** The scan flow for one party; every save goes to `scope`, never a later-active party. */
+function PartyScan({
+  scope,
+  prepareImage,
+  fetchImpl,
+}: {
+  scope: PartyScopedRepository;
+  prepareImage: (dataUrl: string) => Promise<string>;
+  fetchImpl?: typeof fetch;
+}) {
   const inputId = useId();
   const hintId = useId();
   const attentionId = useId();
@@ -336,7 +382,7 @@ export function ScanScreen({
           </button>
           <CharacterForm
             key={state.run}
-            repo={repo}
+            scope={scope}
             initialValues={state.draft}
             missingValues={state.image ? "blank" : "defaults"}
             onSaved={(character) => handleSaved(state.run, character)}

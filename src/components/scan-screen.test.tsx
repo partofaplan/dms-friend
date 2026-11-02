@@ -2,7 +2,13 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 
 import type { DexieRepository, PartyScopedRepository } from "@/lib/db";
 import { MAX_IMAGE_BASE64_LENGTH } from "@/lib/ai/contracts";
-import { activateDefaultParty, createTestRepository } from "@/test-utils/repository";
+import { setActiveParty } from "@/lib/profiles/active-profile";
+import {
+  activateDefaultParty,
+  createParty,
+  createTestRepository,
+  type SeededParty,
+} from "@/test-utils/repository";
 
 import { ScanScreen } from "./scan-screen";
 
@@ -23,10 +29,13 @@ afterEach(() => {
 
 const identity = async (dataUrl: string) => dataUrl;
 
-function renderScan(prepareImage = identity) {
-  return render(
+/** Renders the scan screen and waits for it to resolve the active party. */
+async function renderScan(prepareImage = identity) {
+  const view = render(
     <ScanScreen repo={repo} fetchImpl={fetchMock} prepareImage={prepareImage} />,
   );
+  await screen.findByLabelText("Character sheet photo");
+  return view;
 }
 
 function pngFile(name = "sheet.png") {
@@ -79,8 +88,8 @@ function spinbutton(name: string) {
 }
 
 describe("ScanScreen", () => {
-  it("labels the file input for camera capture and image upload", () => {
-    renderScan();
+  it("labels the file input for camera capture and image upload", async () => {
+    await renderScan();
     const input = screen.getByLabelText("Character sheet photo");
     expect(input).toHaveAttribute("type", "file");
     expect(input).toHaveAttribute("capture", "environment");
@@ -91,7 +100,7 @@ describe("ScanScreen", () => {
   });
 
   it("rejects an unsupported file type without calling the API", async () => {
-    renderScan();
+    await renderScan();
     pick(new File(["%PDF"], "sheet.pdf", { type: "application/pdf" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
@@ -101,7 +110,7 @@ describe("ScanScreen", () => {
   });
 
   it("rejects an oversized file before reading or uploading it", async () => {
-    renderScan();
+    await renderScan();
     const file = pngFile();
     Object.defineProperty(file, "size", { value: 50 * 1024 * 1024 });
     pick(file);
@@ -112,7 +121,7 @@ describe("ScanScreen", () => {
 
   it("rejects an image that is still over the extract limit after preparing", async () => {
     const huge = `data:image/png;base64,${"A".repeat(MAX_IMAGE_BASE64_LENGTH + 4)}`;
-    renderScan(async () => huge);
+    await renderScan(async () => huge);
     pick(pngFile());
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/too large/);
@@ -122,7 +131,7 @@ describe("ScanScreen", () => {
   it("extracts a picked image and pre-fills the form with mapped values", async () => {
     let resolveFetch!: (response: Response) => void;
     fetchMock.mockReturnValue(new Promise((resolve) => (resolveFetch = resolve)));
-    renderScan();
+    await renderScan();
     pick(pngFile());
 
     await waitFor(() =>
@@ -160,7 +169,7 @@ describe("ScanScreen", () => {
   it("saves the reviewed character to the repository with its source scan", async () => {
     fetchMock.mockResolvedValue(jsonResponse({ data: extracted, raw: "{}" }));
     const create = vi.spyOn(party.characters, "create");
-    renderScan();
+    await renderScan();
     pick(pngFile());
 
     await screen.findByRole("form", { name: "New character" });
@@ -207,7 +216,7 @@ describe("ScanScreen", () => {
         ),
       )
       .mockResolvedValueOnce(jsonResponse({ data: extracted, raw: "{}" }));
-    renderScan();
+    await renderScan();
     pick(pngFile());
 
     const alert = await screen.findByRole("alert");
@@ -227,7 +236,7 @@ describe("ScanScreen", () => {
     fetchMock.mockResolvedValue(
       jsonResponse({ error: { kind: "missing_key", message: "x" } }, 500),
     );
-    renderScan();
+    await renderScan();
     pick(pngFile());
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/AI isn't configured/);
@@ -240,7 +249,7 @@ describe("ScanScreen", () => {
 
   it("lets the user retake from the review step", async () => {
     fetchMock.mockResolvedValue(jsonResponse({ data: extracted, raw: "{}" }));
-    renderScan();
+    await renderScan();
     pick(pngFile());
     await screen.findByRole("form", { name: "New character" });
 
@@ -265,7 +274,7 @@ describe("ScanScreen", () => {
       }),
     );
     const create = vi.spyOn(party.characters, "create");
-    renderScan();
+    await renderScan();
     pick(pngFile());
     await screen.findByRole("form", { name: "New character" });
 
@@ -309,7 +318,7 @@ describe("ScanScreen", () => {
   });
 
   it("keeps starting defaults when entering a character manually", async () => {
-    renderScan();
+    await renderScan();
     fireEvent.click(screen.getByRole("button", { name: "Enter manually instead" }));
 
     expect(screen.getByRole("form", { name: "New character" })).toBeInTheDocument();
@@ -332,7 +341,7 @@ describe("ScanScreen", () => {
             resolveCreate = () => resolve(realCreate(input));
           }),
       );
-    renderScan();
+    await renderScan();
     pick(pngFile());
     await screen.findByRole("form", { name: "New character" });
 
@@ -360,5 +369,118 @@ describe("ScanScreen", () => {
     expect(screen.queryByRole("button", { name: "Scan another" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add character" })).toBeEnabled();
     expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  describe("party scoping", () => {
+    /** A second party for the active user, not yet active. */
+    async function otherParty() {
+      const { user } = await activateDefaultParty(repo);
+      return createParty(repo, user.id, "Curse of Strahd");
+    }
+
+    async function switchTo(other: SeededParty) {
+      await act(() => setActiveParty(other.partyProfile.id, repo));
+      await screen.findByLabelText("Character sheet photo");
+    }
+
+    it("saves a scanned character into the active party only", async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ data: extracted, raw: "{}" }));
+      const other = await otherParty();
+      await renderScan();
+      pick(pngFile());
+      await screen.findByRole("form", { name: "New character" });
+      fireEvent.change(spinbutton("Current HP"), { target: { value: "15" } });
+      fireEvent.click(screen.getByRole("button", { name: "Add character" }));
+
+      await waitFor(() =>
+        expect(screen.getByRole("status")).toHaveTextContent("Saved Ilsa to the roster."),
+      );
+      await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+      expect((await party.characters.getAll()).map((c) => c.name)).toEqual(["Ilsa"]);
+      expect(await other.scope.characters.getAll()).toEqual([]);
+    });
+
+    it("discards a pending scan review when the active party switches", async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ data: extracted, raw: "{}" }));
+      const other = await otherParty();
+      const createInA = vi.spyOn(party.characters, "create");
+      const createInB = vi.spyOn(other.scope.characters, "create");
+      await renderScan();
+      pick(pngFile());
+      await screen.findByRole("form", { name: "New character" });
+      fireEvent.change(spinbutton("Current HP"), { target: { value: "15" } });
+
+      await switchTo(other);
+
+      // The party-A draft (and its source image) is gone; nothing can save it into B.
+      expect(screen.queryByRole("form")).not.toBeInTheDocument();
+      expect(screen.queryByRole("img")).not.toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent("");
+      expect(createInA).not.toHaveBeenCalled();
+      expect(createInB).not.toHaveBeenCalled();
+      expect(await party.characters.getAll()).toEqual([]);
+      expect(await other.scope.characters.getAll()).toEqual([]);
+    });
+
+    it("discards a manual-entry draft when the active party switches", async () => {
+      const other = await otherParty();
+      await renderScan();
+      fireEvent.click(screen.getByRole("button", { name: "Enter manually instead" }));
+      fireEvent.change(textbox("Name"), { target: { value: "Pip" } });
+
+      await switchTo(other);
+
+      expect(screen.queryByRole("form")).not.toBeInTheDocument();
+      // A fresh manual draft under B starts empty.
+      fireEvent.click(screen.getByRole("button", { name: "Enter manually instead" }));
+      expect(textbox("Name")).toHaveValue("");
+      expect(await other.scope.characters.getAll()).toEqual([]);
+    });
+
+    it("aborts an in-flight extraction when the active party switches", async () => {
+      let resolveFetch!: (response: Response) => void;
+      fetchMock.mockReturnValue(new Promise((resolve) => (resolveFetch = resolve)));
+      const other = await otherParty();
+      await renderScan();
+      pick(pngFile());
+      await waitFor(() =>
+        expect(screen.getByRole("status")).toHaveTextContent("Reading sheet…"),
+      );
+      const signal = fetchMock.mock.calls[0][1]?.signal;
+
+      await switchTo(other);
+      expect(signal?.aborted).toBe(true);
+
+      // A late response for party A's sheet never surfaces under party B.
+      await act(async () => {
+        resolveFetch(jsonResponse({ data: extracted, raw: "{}" }));
+      });
+      expect(screen.queryByRole("form")).not.toBeInTheDocument();
+      expect(screen.queryByText("Reading sheet…")).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Character sheet photo")).toBeInTheDocument();
+      expect(await party.characters.getAll()).toEqual([]);
+      expect(await other.scope.characters.getAll()).toEqual([]);
+    });
+
+    it("saves into the newly active party after a switch", async () => {
+      const other = await otherParty();
+      await renderScan();
+      await switchTo(other);
+
+      fireEvent.click(screen.getByRole("button", { name: "Enter manually instead" }));
+      fireEvent.change(textbox("Name"), { target: { value: "Ezmerelda" } });
+      fireEvent.change(textbox("Class"), { target: { value: "Ranger" } });
+      fireEvent.change(spinbutton("Armor Class"), { target: { value: "15" } });
+      fireEvent.change(spinbutton("Max HP"), { target: { value: "30" } });
+      fireEvent.change(spinbutton("Current HP"), { target: { value: "30" } });
+      fireEvent.click(screen.getByRole("button", { name: "Add character" }));
+
+      await waitFor(() =>
+        expect(screen.getByRole("status")).toHaveTextContent("Saved Ezmerelda to the roster."),
+      );
+      await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+      expect((await other.scope.characters.getAll()).map((c) => c.name)).toEqual(["Ezmerelda"]);
+      expect(await party.characters.getAll()).toEqual([]);
+    });
   });
 });
