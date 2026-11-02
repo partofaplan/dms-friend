@@ -1,4 +1,4 @@
-export type NavIconName = "home" | "roster" | "monsters" | "chat" | "scan";
+export type NavIconName = "home" | "roster" | "monsters" | "stable" | "chat" | "scan";
 
 export type NavItem = {
   href: string;
@@ -21,6 +21,7 @@ export const HOME_NAV_ITEM: NavItem = {
 export const NAV_ITEMS: readonly NavItem[] = [
   { href: "/roster", label: "Roster", description: "Track your party", icon: "roster", requiresNetwork: false },
   { href: "/monsters", label: "Monsters", description: "Look up stat blocks", icon: "monsters", requiresNetwork: true },
+  { href: "/stable", label: "Stable", description: "Track monsters in combat", icon: "stable", requiresNetwork: false },
   { href: "/chat", label: "Chat", description: "Ask the AI assistant", icon: "chat", requiresNetwork: true },
   { href: "/scan", label: "Scan", description: "Import a character sheet", icon: "scan", requiresNetwork: true },
 ];

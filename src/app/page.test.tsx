@@ -20,6 +20,7 @@ describe("Home shell", () => {
     for (const [label, href] of [
       ["Roster", "/roster"],
       ["Monsters", "/monsters"],
+      ["Stable", "/stable"],
       ["Chat", "/chat"],
       ["Scan", "/scan"],
     ]) {

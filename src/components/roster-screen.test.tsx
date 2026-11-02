@@ -53,7 +53,11 @@ function withDeferredUpdates(base: DexieRepository) {
     return base.characters.update(id, changes);
   };
   return {
-    repo: { characters, parties: base.parties } satisfies Repository,
+    repo: {
+      characters,
+      parties: base.parties,
+      combatants: base.combatants,
+    } satisfies Repository,
     waiting: () => gates.map((gate) => gate.id),
     release(id: string) {
       const index = gates.findIndex((gate) => gate.id === id);

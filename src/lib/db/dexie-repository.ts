@@ -3,18 +3,28 @@ import type { z } from "zod";
 import {
   RecordNotFoundError,
   ValidationError,
+  type AddMonsterOptions,
   type CharacterRepository,
+  type CombatantRepository,
   type PartyRepository,
   type Repository,
 } from "./repository";
+import type { MonsterStatBlock } from "@/lib/monsters/types";
+
 import {
   characterInputSchema,
   characterSchema,
+  combatantInputSchema,
+  combatantName,
+  combatantSchema,
   partyInputSchema,
   partySchema,
   type Character,
   type CharacterInput,
   type CharacterUpdate,
+  type Combatant,
+  type CombatantInput,
+  type CombatantUpdate,
   type Party,
   type PartyInput,
   type PartyUpdate,
@@ -26,12 +36,21 @@ export class DmFriendDb extends Dexie {
   characters!: EntityTable<Character, "id">;
   parties!: EntityTable<Party, "id">;
 
+  combatants!: EntityTable<Combatant, "id">;
+
   constructor(name: string = DEFAULT_DB_NAME, options?: DexieOptions) {
     super(name, options);
+    // Never edit a shipped version: add a new one. Dexie carries earlier
+    // tables forward, so v2 only declares what it adds and existing
+    // characters/parties are untouched by the upgrade.
     this.version(1).stores({
       characters: "id, name, updatedAt",
       // Multi-entry index lets us find every party containing a character.
       parties: "id, name, *characterIds, updatedAt",
+    });
+    // v2: the monster stable.
+    this.version(2).stores({
+      combatants: "id, createdAt, monster.slug",
     });
   }
 }
@@ -59,6 +78,7 @@ export class DexieRepository implements Repository {
   readonly db: DmFriendDb;
   readonly characters: CharacterRepository;
   readonly parties: PartyRepository;
+  readonly combatants: CombatantRepository;
 
   private readonly now: () => string;
   private readonly generateId: () => string;
@@ -88,6 +108,76 @@ export class DexieRepository implements Repository {
         this.removeCharacterFromParty(partyId, characterId),
       listCharacters: (partyId) => this.listPartyCharacters(partyId),
     };
+
+    this.combatants = {
+      create: (input) => this.createCombatant(input),
+      addFromMonster: (monster, options) =>
+        this.addMonsterToStable(monster, options),
+      getById: (id) => this.db.combatants.get(id),
+      getAll: () => this.db.combatants.orderBy("createdAt").toArray(),
+      update: (id, changes) => this.updateCombatant(id, changes),
+      delete: (id) => this.db.combatants.delete(id),
+    };
+  }
+
+  private async createCombatant(input: CombatantInput): Promise<Combatant> {
+    const data = validate(combatantInputSchema, "combatant", input);
+    const timestamp = this.now();
+    const combatant = validate(combatantSchema, "combatant", {
+      ...data,
+      id: this.generateId(),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    await this.db.combatants.add(combatant);
+    return combatant;
+  }
+
+  /**
+   * The label is picked inside the transaction so two quick adds of the same
+   * monster can't both claim "Goblin 2".
+   */
+  private addMonsterToStable(
+    monster: MonsterStatBlock,
+    options: AddMonsterOptions = {},
+  ): Promise<Combatant> {
+    return this.db.transaction("rw", this.db.combatants, async () => {
+      const max = options.maxHp ?? monster.hitPoints;
+      let label = options.label;
+      if (label === undefined) {
+        const taken = new Set(
+          (await this.db.combatants.toArray()).map(combatantName),
+        );
+        label = monster.name;
+        for (let n = 2; taken.has(label); n++) label = `${monster.name} ${n}`;
+      }
+      return this.createCombatant({
+        monster,
+        // The first of a kind just shows the monster's own name.
+        label: label === monster.name ? undefined : label,
+        // A block without HP (null) fails validation as a ValidationError.
+        hitPoints: { max: max as number, current: max as number },
+      });
+    });
+  }
+
+  private updateCombatant(
+    id: string,
+    changes: CombatantUpdate,
+  ): Promise<Combatant> {
+    return this.db.transaction("rw", this.db.combatants, async () => {
+      const existing = await this.db.combatants.get(id);
+      if (!existing) throw new RecordNotFoundError("combatant", id);
+      const updated = validate(combatantSchema, "combatant", {
+        ...existing,
+        ...changes,
+        id: existing.id,
+        createdAt: existing.createdAt,
+        updatedAt: this.now(),
+      });
+      await this.db.combatants.put(updated);
+      return updated;
+    });
   }
 
   private async createCharacter(input: CharacterInput): Promise<Character> {

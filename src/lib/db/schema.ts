@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { monsterStatBlockSchema } from "@/lib/monsters/types";
+
 /*
  * Zod schemas for the local data model. Each entity has two schemas:
  *  - an *input* schema for what callers supply on create (no id/timestamps)
@@ -145,3 +147,39 @@ export const partySchema = partyInputSchema.extend({
 export type PartyInput = z.input<typeof partyInputSchema>;
 export type Party = z.infer<typeof partySchema>;
 export type PartyUpdate = Partial<PartyInput>;
+
+/*
+ * A combatant is a monster saved to the stable, with live combat state. The
+ * full normalized stat block is embedded at add-time so an entry is
+ * self-contained: it renders (and can ground the chat) offline, without
+ * re-fetching from Open5e. HP reuses the character rules (0..max, temporary
+ * tracked separately) so the roster and the stable agree on what valid HP is.
+ */
+export const combatantInputSchema = z.object({
+  /** Snapshot of the monster's stat block: slug, name, AC, CR, actions, … */
+  monster: monsterStatBlockSchema.refine((monster) => monster.name.trim() !== "", {
+    message: "monster name is required",
+    path: ["name"],
+  }),
+  /** Display name for telling duplicates apart ("Goblin 2"); defaults to the monster's name. */
+  label: z.string().trim().min(1, "label cannot be blank").optional(),
+  hitPoints: hitPointsSchema,
+  conditions: uniqueList(conditionSchema).default([]),
+  notes: z.string().optional(),
+});
+
+export const combatantSchema = combatantInputSchema.extend({
+  id: z.uuid(),
+  createdAt: timestamp,
+  updatedAt: timestamp,
+});
+
+export type CombatantInput = z.input<typeof combatantInputSchema>;
+export type Combatant = z.infer<typeof combatantSchema>;
+/** Fields that may be changed by an update; nested objects are replaced wholesale. */
+export type CombatantUpdate = Partial<CombatantInput>;
+
+/** The name a combatant is shown (and referred to) by: its label, else the monster's name. */
+export function combatantName(combatant: Pick<Combatant, "label" | "monster">): string {
+  return combatant.label ?? combatant.monster.name;
+}

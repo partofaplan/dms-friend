@@ -2,9 +2,11 @@
 
 import { useEffect, useId, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 
+import { AddToStable } from "@/components/add-to-stable";
 import { MonsterStatBlock } from "@/components/monster-stat-block";
 import { OfflineNotice } from "@/components/offline-status";
 import { setLastViewedMonster } from "@/lib/chat/last-monster";
+import type { Repository } from "@/lib/db";
 import { fetchMonsterDetail, fetchMonsterSearch } from "@/lib/monsters/client";
 import type { MonsterStatBlock as MonsterStatBlockData, MonsterSummary } from "@/lib/monsters/types";
 import { isOnline, useOnlineStatus, useOnReconnect } from "@/lib/pwa/online-status";
@@ -15,6 +17,8 @@ export type MonsterSearchProps = {
   /** Injectable for tests; defaults to the global fetch. */
   fetchImpl?: typeof fetch;
   debounceMs?: number;
+  /** Where "Add to stable" saves; injectable for tests. */
+  repo?: Repository;
 };
 
 type SearchState =
@@ -64,7 +68,7 @@ function searchStatusText(search: SearchState): string {
  * request that fails because the connection dropped mid-flight is parked the
  * same way; only failures while online surface as errors.
  */
-export function MonsterSearch({ fetchImpl, debounceMs = SEARCH_DEBOUNCE_MS }: MonsterSearchProps) {
+export function MonsterSearch({ fetchImpl, debounceMs = SEARCH_DEBOUNCE_MS, repo }: MonsterSearchProps) {
   const inputId = useId();
   const hintId = useId();
   const offlineId = useId();
@@ -251,7 +255,12 @@ export function MonsterSearch({ fetchImpl, debounceMs = SEARCH_DEBOUNCE_MS }: Mo
             </button>
           </div>
         )}
-        {detail.status === "loaded" && <MonsterStatBlock monster={detail.monster} focusOnMount />}
+        {detail.status === "loaded" && (
+          <>
+            <MonsterStatBlock monster={detail.monster} focusOnMount />
+            <AddToStable key={detail.monster.slug} monster={detail.monster} repo={repo} />
+          </>
+        )}
       </div>
     </div>
   );
