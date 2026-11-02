@@ -1,0 +1,28 @@
+DM Friend has been deployed as {{ include "dm-friend.fullname" . }} in namespace {{ .Release.Namespace }}.
+
+{{- if .Values.ingress.enabled }}
+
+URL (Tailscale MagicDNS, tailnet-only{{ if .Values.ingress.funnel }} + public Funnel{{ end }}):
+  https://{{ .Values.ingress.host }}.<your-tailnet>.ts.net
+The operator assigns the tailnet suffix. Find the exact address with:
+  kubectl get ingress {{ include "dm-friend.fullname" . }} -n {{ .Release.Namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+{{- else }}
+
+Port-forward to reach the app locally:
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "dm-friend.fullname" . }} 3000:{{ .Values.service.port }}
+  open http://localhost:3000
+{{- end }}
+
+OpenAI key (needed only for the AI features; the app runs without it):
+{{- if .Values.openai.existingSecret }}
+  Using existing Secret "{{ .Values.openai.existingSecret }}" (key {{ .Values.openai.apiKeySecretKey }}).
+{{- else if .Values.openai.apiKey }}
+  Using the Secret templated from openai.apiKey ({{ include "dm-friend.secretName" . }}).
+{{- else }}
+  WARNING: no key configured — the templated Secret {{ include "dm-friend.secretName" . }} is EMPTY.
+  Either create a Secret and point the chart at it:
+    kubectl create secret generic dm-friend-openai -n {{ .Release.Namespace }} --from-literal={{ .Values.openai.apiKeySecretKey }}=sk-...
+    helm upgrade {{ .Release.Name }} <chart> -n {{ .Release.Namespace }} --reuse-values --set openai.existingSecret=dm-friend-openai
+  or pass it at install time (never commit it):
+    helm upgrade {{ .Release.Name }} <chart> -n {{ .Release.Namespace }} --reuse-values --set openai.apiKey="$OPENAI_API_KEY"
+{{- end }}
