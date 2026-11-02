@@ -1,4 +1,4 @@
-import Dexie from "dexie";
+import Dexie, { type Table } from "dexie";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 import { normalizeMonster } from "@/lib/monsters/types";
@@ -446,5 +446,86 @@ describe("schema migration to v3", () => {
     repo = openRepo("dm-friend-reopen");
     expect(await repo.users.getAll()).toEqual(before);
     expect(await repo.db.partyProfiles.count()).toBe(1);
+  });
+
+  it("rolls a backfill that fails partway back to an intact v2 database", async () => {
+    const name = "dm-friend-rollback";
+    await seedLegacy(name, 2, async (legacy) => {
+      await legacy.table("characters").bulkAdd([brakka, aria]);
+      await legacy.table("parties").add(crew);
+      await legacy.table("combatants").bulkAdd([goblinEntry, bossEntry]);
+    });
+
+    // Let the combatant backfill really stamp its rows, then throw — by then
+    // the profiles exist and the characters are stamped inside the upgrade.
+    const failing = new DmFriendDb(name, { indexedDB: factory, IDBKeyRange });
+    const toCollection = failing.Table.prototype.toCollection;
+    const seenMidUpgrade: { characters: unknown[]; combatants: unknown[]; users: number } = {
+      characters: [],
+      combatants: [],
+      users: 0,
+    };
+    vi.spyOn(failing.Table.prototype, "toCollection").mockImplementation(
+      function (this: Table) {
+        const collection = toCollection.call(this);
+        if (this.name !== "combatants") return collection;
+        const modify = collection.modify.bind(collection);
+        collection.modify = (async (changes: { partyProfileId: string }) => {
+          await modify(changes);
+          seenMidUpgrade.combatants = await toCollection.call(this).toArray();
+          seenMidUpgrade.characters = await this.db.table("characters").toArray();
+          seenMidUpgrade.users = await this.db.table("userProfiles").count();
+          throw new Error("injected backfill failure");
+        }) as unknown as typeof collection.modify;
+        return collection;
+      },
+    );
+    await expect(failing.open()).rejects.toThrow("injected backfill failure");
+    failing.close();
+
+    // The failure struck after real writes had landed in the upgrade transaction.
+    expect(seenMidUpgrade.users).toBe(1);
+    expect(seenMidUpgrade.characters).toHaveLength(2);
+    expect(seenMidUpgrade.combatants).toHaveLength(2);
+    for (const row of [...seenMidUpgrade.characters, ...seenMidUpgrade.combatants]) {
+      expect(row).toHaveProperty("partyProfileId");
+    }
+
+    // Reopened as-is (no schema declared), the database is still exactly v2.
+    const raw = new Dexie(name, { indexedDB: factory, IDBKeyRange });
+    await raw.open();
+    expect(raw.verno).toBe(2);
+    expect(raw.tables.map((t) => t.name).sort()).toEqual([
+      "characters",
+      "combatants",
+      "parties",
+    ]);
+    expect(await raw.table("characters").toArray()).toEqual([brakka, aria]);
+    expect(await raw.table("combatants").toArray()).toEqual([
+      goblinEntry,
+      bossEntry,
+    ]);
+    expect(await raw.table("parties").toArray()).toEqual([crew]);
+    raw.close();
+
+    // A clean open afterwards migrates normally.
+    repo = openRepo(name);
+    expect(repo.db.verno).toBe(3);
+    const users = await repo.users.getAll();
+    expect(users.map((u) => u.name)).toEqual([DEFAULT_USER_NAME]);
+    const [partyProfile] = await repo.partyProfiles.listByUser(users[0].id);
+    expect(partyProfile.name).toBe(DEFAULT_PARTY_NAME);
+    expect(await repo.db.partyProfiles.count()).toBe(1);
+    const scope = repo.forParty(partyProfile.id);
+    const scoped = { partyProfileId: partyProfile.id };
+    expect(await scope.characters.getAll()).toEqual([
+      { ...aria, ...scoped },
+      { ...brakka, ...scoped },
+    ]);
+    expect(await scope.combatants.getAll()).toEqual([
+      { ...goblinEntry, ...scoped },
+      { ...bossEntry, ...scoped },
+    ]);
+    expect(await repo.parties.getAll()).toEqual([crew]);
   });
 });
