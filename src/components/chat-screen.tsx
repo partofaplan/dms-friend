@@ -19,8 +19,14 @@ import {
   type HistoryMessage,
 } from "@/lib/chat/context";
 import { useLastViewedMonster } from "@/lib/chat/last-monster";
+import { resolveReferences, type ResolvedReference } from "@/lib/chat/resolve-names";
 import { CHAT_ERROR_MESSAGES, streamChat, type ChatErrorKind } from "@/lib/chat/stream-client";
-import { repository as defaultRepository, type Character, type Repository } from "@/lib/db";
+import {
+  repository as defaultRepository,
+  type Character,
+  type Combatant,
+  type Repository,
+} from "@/lib/db";
 import type { MonsterStatBlock } from "@/lib/monsters/types";
 import { useOnlineStatus } from "@/lib/pwa/online-status";
 
@@ -54,7 +60,9 @@ function historyFrom(turns: readonly Turn[]): HistoryMessage[] {
  * Flow: sending appends a turn and streams its answer delta by delta. Only one
  * answer streams at a time (send and retry are disabled meanwhile); clearing
  * or unmounting aborts it. Each request carries a fresh system context built
- * from the party roster and the last-viewed monster, plus prior answered turns.
+ * from the party roster, the monster stable's live combat state, the last-
+ * viewed monster, and the characters/combatants the question names (pinned
+ * with their stats), plus prior answered turns.
  * The log is a polite live region marked aria-busy while streaming, so screen
  * readers announce the finished answer rather than every delta. Offline,
  * Send and Retry are disabled with an explanation; drafting still works and
@@ -68,6 +76,8 @@ export function ChatScreen({ repo = defaultRepository, fetchImpl }: ChatScreenPr
   const lastMonster = useLastViewedMonster();
   const [party, setParty] = useState<Character[] | null>(null);
   const [partyError, setPartyError] = useState(false);
+  const [combatants, setCombatants] = useState<Combatant[] | null>(null);
+  const [stableError, setStableError] = useState(false);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [draft, setDraft] = useState("");
   const controllerRef = useRef<AbortController | undefined>(undefined);
@@ -85,6 +95,16 @@ export function ChatScreen({ repo = defaultRepository, fetchImpl }: ChatScreenPr
         setPartyError(true);
       },
     );
+    repo.combatants.getAll().then(
+      (all) => {
+        if (active) setCombatants(all);
+      },
+      () => {
+        if (!active) return;
+        setCombatants([]);
+        setStableError(true);
+      },
+    );
     return () => {
       active = false;
     };
@@ -92,9 +112,10 @@ export function ChatScreen({ repo = defaultRepository, fetchImpl }: ChatScreenPr
 
   useEffect(() => () => controllerRef.current?.abort(), []);
 
+  const loaded = party !== null && combatants !== null;
   const streaming = turns.some((turn) => turn.status === "streaming");
   const question = draft.trim();
-  const canSend = online && party !== null && !streaming && question.length > 0;
+  const canSend = online && loaded && !streaming && question.length > 0;
 
   function updateTurn(id: string, change: (turn: Turn) => Turn) {
     setTurns((all) => all.map((turn) => (turn.id === id ? change(turn) : turn)));
@@ -111,16 +132,24 @@ export function ChatScreen({ repo = defaultRepository, fetchImpl }: ChatScreenPr
         status: "error",
         error: { kind, message: CHAT_ERROR_MESSAGES[kind], interrupted: t.answer.length > 0 },
       }));
+    // The turn is already marked streaming, so nothing here may throw past us
+    // and leave Send/Retry disabled. Unresolvable names just aren't pinned; if
+    // the monster context can't be built, answer without it; if nothing can be
+    // built, fail the turn (retryable).
+    const grounding = { party: party ?? [], combatants: combatants ?? [] };
+    let references: ResolvedReference[] = [];
+    try {
+      references = resolveReferences(turn.question, grounding);
+    } catch {
+      // Answer unpinned; the model still sees the whole party and stable.
+    }
     const assemble = (monster: MonsterStatBlock | null) =>
       assembleChatMessages({
-        systemContext: buildSystemContext({ party: party ?? [], lastMonster: monster }),
+        systemContext: buildSystemContext({ ...grounding, references, lastMonster: monster }),
         history: historyFrom(earlier),
         userMessage: turn.question,
       });
 
-    // The turn is already marked streaming, so nothing here may throw past us
-    // and leave Send/Retry disabled. If the monster context can't be built,
-    // answer without it; if nothing can be built, fail the turn (retryable).
     let messages: ChatMessage[];
     try {
       messages = assemble(lastMonster);
@@ -196,11 +225,11 @@ export function ChatScreen({ repo = defaultRepository, fetchImpl }: ChatScreenPr
   }
 
   const contextNote =
-    party === null
+    party === null || combatants === null
       ? "Loading party…"
-      : `Using: ${party.length > 0 ? `party (${party.length})` : "no party"} · ${
-          lastMonster ? lastMonster.name : "no monster"
-        }`;
+    : `Using: ${party.length > 0 ? `party (${party.length})` : "no party"} · ${
+        combatants.length > 0 ? `stable (${combatants.length})` : "no stable"
+      } · ${lastMonster ? lastMonster.name : "no monster"}`;
 
   return (
     <div className="chat-screen">
@@ -214,6 +243,11 @@ export function ChatScreen({ repo = defaultRepository, fetchImpl }: ChatScreenPr
       {partyError && (
         <p role="alert" className="chat-screen__error">
           Couldn&apos;t load the party, so answers won&apos;t include it.
+        </p>
+      )}
+      {stableError && (
+        <p role="alert" className="chat-screen__error">
+          Couldn&apos;t load the monster stable, so answers won&apos;t include the fight.
         </p>
       )}
 

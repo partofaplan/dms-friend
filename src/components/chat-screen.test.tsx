@@ -44,6 +44,16 @@ async function seedParty() {
   );
 }
 
+/** "Goblin" at full HP and a hurt, poisoned "Goblin 2". */
+async function seedStable() {
+  await repo.combatants.addFromMonster(goblin);
+  const second = await repo.combatants.addFromMonster(goblin);
+  await repo.combatants.update(second.id, {
+    hitPoints: { max: 7, current: 3 },
+    conditions: ["poisoned"],
+  });
+}
+
 async function renderChat() {
   render(<ChatScreen repo={repo} fetchImpl={fetchMock} />);
   await screen.findByText(/^Using:/);
@@ -68,18 +78,70 @@ describe("ChatScreen", () => {
     await seedParty();
     setLastViewedMonster(goblin);
     await renderChat();
-    expect(screen.getByText("Using: party (2) · Goblin")).toBeInTheDocument();
+    expect(screen.getByText("Using: party (2) · no stable · Goblin")).toBeInTheDocument();
   });
 
-  it("notes when there is no party or monster", async () => {
+  it("notes when there is no party, stable, or monster", async () => {
     await renderChat();
-    expect(screen.getByText("Using: no party · no monster")).toBeInTheDocument();
+    expect(screen.getByText("Using: no party · no stable · no monster")).toBeInTheDocument();
+  });
+
+  it("notes the monster stable it grounds answers in", async () => {
+    await seedParty();
+    await seedStable();
+    await renderChat();
+    expect(screen.getByText("Using: party (2) · stable (2) · no monster")).toBeInTheDocument();
   });
 
   it("follows a monster viewed while the chat is open", async () => {
     await renderChat();
     act(() => setLastViewedMonster(goblin));
-    expect(screen.getByText("Using: no party · Goblin")).toBeInTheDocument();
+    expect(screen.getByText("Using: no party · no stable · Goblin")).toBeInTheDocument();
+  });
+
+  it("pins the character a question names by first name, with the live combat state", async () => {
+    await seedParty();
+    await repo.characters.create(
+      characterInput({
+        name: "Thorin Oakenshield",
+        race: "Dwarf",
+        className: "Fighter",
+        level: 5,
+        armorClass: 18,
+        hitPoints: { max: 44, current: 9 },
+        conditions: ["prone"],
+      }),
+    );
+    await seedStable();
+    fetchMock.mockResolvedValue(controllableChatStream().response);
+    await renderChat();
+    expect(screen.getByText("Using: party (3) · stable (2) · no monster")).toBeInTheDocument();
+
+    ask("How badly is Thorin hurt?");
+
+    const system = sentBody().messages[0].content;
+    expect(system).toContain(
+      "Referenced now (who the DM's latest message names):\n- (party) Thorin (Thorin Oakenshield) — Dwarf Fighter 5; AC 18; HP 9/44; conditions: prone",
+    );
+    expect(system).toContain("Monsters in combat (2):");
+    expect(system).toContain("- Goblin 2 (Goblin, CR 1/4) — AC 15; HP 3/7; conditions: poisoned");
+    expect(system).toContain("Party (3):");
+    expect(buildSystemContext).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        references: [expect.objectContaining({ kind: "character", name: "Thorin Oakenshield" })],
+      }),
+    );
+  });
+
+  it("still answers, without the stable, when it can't be loaded", async () => {
+    vi.spyOn(repo.combatants, "getAll").mockRejectedValue(new Error("blocked"));
+    fetchMock.mockResolvedValue(controllableChatStream().response);
+    await renderChat();
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn't load the monster stable");
+    expect(screen.getByText("Using: no party · no stable · no monster")).toBeInTheDocument();
+
+    ask("Who acts first?");
+    expect(sentBody().messages[0].content).toContain("Monsters in combat: none.");
   });
 
   it("streams the assistant reply delta by delta, grounded in the party and monster", async () => {
@@ -215,7 +277,7 @@ describe("ChatScreen", () => {
     const stream = controllableChatStream();
     fetchMock.mockResolvedValue(stream.response);
     render(<FreshChatScreen repo={repo} fetchImpl={fetchMock} />);
-    expect(await screen.findByText("Using: no party · no monster")).toBeInTheDocument();
+    expect(await screen.findByText("Using: no party · no stable · no monster")).toBeInTheDocument();
 
     ask("Who acts first?");
     expect(fetchMock).toHaveBeenCalledTimes(1);
