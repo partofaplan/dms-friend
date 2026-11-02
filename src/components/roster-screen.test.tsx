@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -6,15 +7,25 @@ import {
   within,
 } from "@testing-library/react";
 
-import type { DexieRepository, Repository } from "@/lib/db";
-import { characterInput, createTestRepository } from "@/test-utils/repository";
+import type { CharacterRepository, DexieRepository, PartyScopedRepository } from "@/lib/db";
+import { refreshActiveProfile, setActiveParty } from "@/lib/profiles/active-profile";
+import {
+  activateDefaultParty,
+  characterInput,
+  createParty,
+  createTestRepository,
+  withPartyScope,
+} from "@/test-utils/repository";
 
 import { RosterScreen } from "./roster-screen";
 
 let repo: DexieRepository;
+/** The active party's scope; the roster shows only its characters. */
+let party: PartyScopedRepository;
 
-beforeEach(() => {
+beforeEach(async () => {
   repo = createTestRepository();
+  ({ scope: party } = await activateDefaultParty(repo));
 });
 
 afterEach(() => {
@@ -22,10 +33,10 @@ afterEach(() => {
 });
 
 async function seed() {
-  const brakka = await repo.characters.create(
+  const brakka = await party.characters.create(
     characterInput({ race: "Half-Orc", hitPoints: { max: 28, current: 20 } }),
   );
-  const ilsa = await repo.characters.create(
+  const ilsa = await party.characters.create(
     characterInput({
       name: "Ilsa",
       className: "Wizard",
@@ -47,17 +58,13 @@ function row(name: string) {
  */
 function withDeferredUpdates(base: DexieRepository) {
   const gates: { id: string; open: () => void }[] = [];
-  const characters: Repository["characters"] = Object.create(base.characters);
+  const characters: CharacterRepository = Object.create(party.characters);
   characters.update = async (id, changes) => {
     await new Promise<void>((open) => gates.push({ id, open }));
-    return base.characters.update(id, changes);
+    return party.characters.update(id, changes);
   };
   return {
-    repo: {
-      characters,
-      parties: base.parties,
-      combatants: base.combatants,
-    } satisfies Repository,
+    repo: withPartyScope(base, { ...party, characters }),
     waiting: () => gates.map((gate) => gate.id),
     release(id: string) {
       const index = gates.findIndex((gate) => gate.id === id);
@@ -118,7 +125,7 @@ describe("RosterScreen", () => {
     expect(await screen.findByRole("article", { name: "Pip" })).toHaveTextContent(
       "Rogue 1",
     );
-    expect(await repo.characters.getAll()).toHaveLength(1);
+    expect(await party.characters.getAll()).toHaveLength(1);
   });
 
   it("edit populates the form and saves changes back to the list", async () => {
@@ -156,7 +163,7 @@ describe("RosterScreen", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
     expect(row("Ilsa")).toBeInTheDocument();
-    expect((await repo.characters.getAll()).map((c) => c.name)).toEqual([
+    expect((await party.characters.getAll()).map((c) => c.name)).toEqual([
       "Brakka",
       "Ilsa",
     ]);
@@ -176,7 +183,7 @@ describe("RosterScreen", () => {
     // Cancelling keeps the character and returns focus to its Delete button.
     fireEvent.click(within(row("Brakka")).getByRole("button", { name: "Cancel" }));
     expect(screen.getByRole("button", { name: "Delete Brakka" })).toHaveFocus();
-    expect(await repo.characters.getById(brakka.id)).toBeDefined();
+    expect(await party.characters.getById(brakka.id)).toBeDefined();
 
     fireEvent.click(screen.getByRole("button", { name: "Delete Brakka" }));
     fireEvent.click(
@@ -189,7 +196,7 @@ describe("RosterScreen", () => {
       ).not.toBeInTheDocument(),
     );
     expect(row("Ilsa")).toBeInTheDocument();
-    expect(await repo.characters.getById(brakka.id)).toBeUndefined();
+    expect(await party.characters.getById(brakka.id)).toBeUndefined();
     // Focus moves off the removed row to a stable control.
     expect(screen.getByRole("button", { name: "Add character" })).toHaveFocus();
   });
@@ -233,10 +240,10 @@ describe("RosterScreen", () => {
     deferred.release(brakka.id);
     await waitFor(() => expect(row("Brakka")).toHaveTextContent("HP22 / 28"));
 
-    expect((await repo.characters.getById(brakka.id))?.hitPoints.current).toBe(
+    expect((await party.characters.getById(brakka.id))?.hitPoints.current).toBe(
       22,
     );
-    expect((await repo.characters.getById(ilsa.id))?.hitPoints.current).toBe(
+    expect((await party.characters.getById(ilsa.id))?.hitPoints.current).toBe(
       21,
     );
   });
@@ -279,12 +286,105 @@ describe("RosterScreen", () => {
       screen.getByRole("button", { name: "Decrease HP for Brakka" }),
     );
     await waitFor(() => expect(row("Brakka")).toHaveTextContent("HP20 / 28"));
-    expect((await repo.characters.getById(brakka.id))?.hitPoints.current).toBe(
+    expect((await party.characters.getById(brakka.id))?.hitPoints.current).toBe(
       20,
     );
     // Ilsa is at full HP, so increasing is disabled.
     expect(
       screen.getByRole("button", { name: "Increase HP for Ilsa" }),
     ).toBeDisabled();
+  });
+
+  describe("party scoping", () => {
+    it("adds a character to the active party only", async () => {
+      const { user } = await activateDefaultParty(repo);
+      const other = await createParty(repo, user.id, "Curse of Strahd");
+      await other.scope.characters.create(characterInput({ name: "Ezmerelda" }));
+      render(<RosterScreen repo={repo} />);
+      await screen.findByText("No characters yet.");
+      // Another party's characters never show up.
+      expect(screen.queryByRole("article", { name: "Ezmerelda" })).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Add character" }));
+      for (const [label, value] of [
+        ["Name", "Pip"],
+        ["Class", "Rogue"],
+        ["Armor Class", "14"],
+        ["Max HP", "9"],
+        ["Current HP", "9"],
+      ]) {
+        fireEvent.change(screen.getByLabelText(label), { target: { value } });
+      }
+      fireEvent.click(
+        within(screen.getByRole("form")).getByRole("button", { name: "Add character" }),
+      );
+      await screen.findByRole("article", { name: "Pip" });
+
+      expect((await party.characters.getAll()).map((c) => c.name)).toEqual(["Pip"]);
+      expect((await other.scope.characters.getAll()).map((c) => c.name)).toEqual(["Ezmerelda"]);
+    });
+
+    it("re-scopes to the new party when the active party switches", async () => {
+      await seed();
+      const { user } = await activateDefaultParty(repo);
+      const other = await createParty(repo, user.id, "Curse of Strahd");
+      await other.scope.characters.create(characterInput({ name: "Ezmerelda" }));
+      render(<RosterScreen repo={repo} />);
+      await screen.findByRole("article", { name: "Brakka" });
+
+      await act(() => setActiveParty(other.partyProfile.id, repo));
+      expect(await screen.findByRole("article", { name: "Ezmerelda" })).toBeInTheDocument();
+      expect(screen.queryByRole("article", { name: "Brakka" })).not.toBeInTheDocument();
+      expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    });
+
+    it("closes an open editor and re-scopes when the active party is deleted", async () => {
+      const { brakka } = await seed();
+      const { user, partyProfile } = await activateDefaultParty(repo);
+      const other = await createParty(repo, user.id, "Curse of Strahd");
+      await other.scope.characters.create(characterInput({ name: "Ezmerelda" }));
+      const createInB = vi.spyOn(other.scope.characters, "create");
+      const updateInB = vi.spyOn(other.scope.characters, "update");
+      render(<RosterScreen repo={repo} />);
+      await screen.findByRole("article", { name: "Brakka" });
+
+      // A half-finished edit of a party-A character.
+      fireEvent.click(screen.getByRole("button", { name: "Edit Brakka" }));
+      fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Brakka the Bold" } });
+
+      await act(async () => {
+        await repo.partyProfiles.delete(partyProfile.id);
+        await refreshActiveProfile(repo);
+      });
+
+      // The selection heals to the remaining party; the editor is gone with A.
+      expect(await screen.findByRole("article", { name: "Ezmerelda" })).toBeInTheDocument();
+      expect(screen.queryByRole("form")).not.toBeInTheDocument();
+      expect(screen.queryByRole("article", { name: /Brakka/ })).not.toBeInTheDocument();
+      expect(createInB).not.toHaveBeenCalled();
+      expect(updateInB).not.toHaveBeenCalled();
+      expect((await other.scope.characters.getAll()).map((c) => c.name)).toEqual(["Ezmerelda"]);
+      expect(await other.scope.characters.getById(brakka.id)).toBeUndefined();
+
+      // New work lands in the new active party.
+      fireEvent.click(screen.getByRole("button", { name: "Add character" }));
+      for (const [label, value] of [
+        ["Name", "Pip"],
+        ["Class", "Rogue"],
+        ["Armor Class", "14"],
+        ["Max HP", "9"],
+        ["Current HP", "9"],
+      ]) {
+        fireEvent.change(screen.getByLabelText(label), { target: { value } });
+      }
+      fireEvent.click(
+        within(screen.getByRole("form")).getByRole("button", { name: "Add character" }),
+      );
+      await screen.findByRole("article", { name: "Pip" });
+      expect((await other.scope.characters.getAll()).map((c) => c.name).sort()).toEqual([
+        "Ezmerelda",
+        "Pip",
+      ]);
+    });
   });
 });

@@ -1,16 +1,23 @@
-import { useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 
 import { monsterStatBlockSchema, type MonsterStatBlock } from "@/lib/monsters/types";
 
 /*
- * Remembers the last monster stat block the DM opened, so the chat assistant
- * can ground answers in it. A module-level store (survives client-side
- * navigation) mirrored to sessionStorage (survives a reload in the same tab).
+ * Remembers the last monster stat block the DM opened, per party profile, so
+ * the chat assistant can ground answers in it without one campaign's monster
+ * leaking into another's. A module-level store (survives client-side
+ * navigation) mirrored to sessionStorage (survives a reload in the same tab),
+ * one slot per party.
  */
 
+/** Prefix of every party's slot; see lastMonsterStorageKey. */
 export const LAST_MONSTER_STORAGE_KEY = "dm-friend:last-monster";
 
-let current: MonsterStatBlock | null | undefined;
+export function lastMonsterStorageKey(partyProfileId: string): string {
+  return `${LAST_MONSTER_STORAGE_KEY}:${partyProfileId}`;
+}
+
+const current = new Map<string, MonsterStatBlock | null>();
 const listeners = new Set<() => void>();
 
 function storage(): Storage | undefined {
@@ -21,9 +28,9 @@ function storage(): Storage | undefined {
   }
 }
 
-function readStored(): MonsterStatBlock | null {
+function readStored(partyProfileId: string): MonsterStatBlock | null {
   try {
-    const raw = storage()?.getItem(LAST_MONSTER_STORAGE_KEY);
+    const raw = storage()?.getItem(lastMonsterStorageKey(partyProfileId));
     if (!raw) return null;
     // Storage is user-editable and can be stale: anything that isn't a
     // complete stat block counts as no monster, so it can't break the chat.
@@ -34,24 +41,35 @@ function readStored(): MonsterStatBlock | null {
   }
 }
 
-export function getLastViewedMonster(): MonsterStatBlock | null {
-  if (current === undefined) current = readStored();
-  return current;
+/** The party's last-viewed monster, or null. */
+export function getLastViewedMonster(partyProfileId: string): MonsterStatBlock | null {
+  if (!current.has(partyProfileId)) current.set(partyProfileId, readStored(partyProfileId));
+  return current.get(partyProfileId) ?? null;
 }
 
 /**
- * Records (or with null, forgets) the last-viewed monster. A value that isn't
- * a complete stat block is treated as null.
+ * Records (or with null, forgets) the party's last-viewed monster. A value
+ * that isn't a complete stat block is treated as null.
  */
-export function setLastViewedMonster(monster: MonsterStatBlock | null): void {
+export function setLastViewedMonster(
+  partyProfileId: string,
+  monster: MonsterStatBlock | null,
+): void {
   if (monster && !monsterStatBlockSchema.safeParse(monster).success) monster = null;
-  current = monster;
+  current.set(partyProfileId, monster);
   try {
-    if (monster) storage()?.setItem(LAST_MONSTER_STORAGE_KEY, JSON.stringify(monster));
-    else storage()?.removeItem(LAST_MONSTER_STORAGE_KEY);
+    const key = lastMonsterStorageKey(partyProfileId);
+    if (monster) storage()?.setItem(key, JSON.stringify(monster));
+    else storage()?.removeItem(key);
   } catch {
     // Quota or disabled storage: the in-memory value still works this session.
   }
+  for (const listener of listeners) listener();
+}
+
+/** Forgets every party's monster in memory (storage is left alone). For tests. */
+export function resetLastViewedMonsters(): void {
+  current.clear();
   for (const listener of listeners) listener();
 }
 
@@ -60,7 +78,14 @@ function subscribe(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
-/** The last-viewed monster; re-renders when it changes. Null during SSR. */
-export function useLastViewedMonster(): MonsterStatBlock | null {
-  return useSyncExternalStore(subscribe, getLastViewedMonster, () => null);
+/**
+ * The party's last-viewed monster; re-renders when it changes. Null during
+ * SSR or without a party.
+ */
+export function useLastViewedMonster(partyProfileId: string | null): MonsterStatBlock | null {
+  const read = useCallback(
+    () => (partyProfileId ? getLastViewedMonster(partyProfileId) : null),
+    [partyProfileId],
+  );
+  return useSyncExternalStore(subscribe, read, () => null);
 }

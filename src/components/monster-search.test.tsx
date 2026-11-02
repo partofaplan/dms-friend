@@ -1,9 +1,9 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 
-import { getLastViewedMonster, setLastViewedMonster } from "@/lib/chat/last-monster";
+import { getLastViewedMonster } from "@/lib/chat/last-monster";
 import { normalizeMonster, normalizeMonsterSummary } from "@/lib/monsters/types";
 import { goblinRaw, guardianRaw } from "@/test-utils/open5e-fixtures";
-import { createTestRepository } from "@/test-utils/repository";
+import { activateDefaultParty, createParty, createTestRepository } from "@/test-utils/repository";
 
 import { MonsterSearch, SEARCH_DEBOUNCE_MS } from "./monster-search";
 
@@ -258,8 +258,13 @@ describe("MonsterSearch", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
-  it("records the loaded stat block as the last-viewed monster for chat", async () => {
-    setLastViewedMonster(null);
+  it("records the loaded stat block as the active party's last-viewed monster for chat", async () => {
+    // IndexedDB (fake-indexeddb) needs real timers to settle.
+    vi.useRealTimers();
+    const repo = createTestRepository();
+    const { user, partyProfile } = await activateDefaultParty(repo);
+    const other = await createParty(repo, user.id, "Other");
+    vi.useFakeTimers();
     fetchMock
       .mockResolvedValueOnce(json({ results: summaries }))
       .mockResolvedValueOnce(json({ error: { kind: "timeout", message: "x" } }, 504))
@@ -272,13 +277,15 @@ describe("MonsterSearch", () => {
       fireEvent.click(screen.getByRole("button", { name: /Goblin/ }));
     });
     // A failed load does not change it.
-    expect(getLastViewedMonster()).toBeNull();
+    expect(getLastViewedMonster(partyProfile.id)).toBeNull();
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /Vault Guardian/ }));
     });
-    expect(getLastViewedMonster()).toEqual(guardian);
-    setLastViewedMonster(null);
+    expect(getLastViewedMonster(partyProfile.id)).toEqual(guardian);
+    // Another party's chat doesn't see it.
+    expect(getLastViewedMonster(other.partyProfile.id)).toBeNull();
+    repo.db.close();
   });
 
   it("adds the viewed monster to the stable, once per click", async () => {
@@ -305,7 +312,9 @@ describe("MonsterSearch", () => {
       fireEvent.click(add);
       expect(await screen.findByText(/Added Goblin 2 to the stable\./)).toBeInTheDocument();
 
-      const stable = await repo.combatants.getAll();
+      // Saved to the active party (the default one, created on first use).
+      const { partyProfile } = await repo.ensureDefaultProfile();
+      const stable = await repo.forParty(partyProfile.id).combatants.getAll();
       expect(stable).toHaveLength(2);
       expect(stable[0].monster).toEqual(goblin);
       expect(stable.map((c) => c.hitPoints)).toEqual([

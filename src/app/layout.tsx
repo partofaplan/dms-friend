@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 
+import { ActiveScopeBar } from "@/components/active-scope-bar";
 import { BottomNav } from "@/components/bottom-nav";
 import { OfflineBanner } from "@/components/offline-status";
 import { ServiceWorkerRegistration } from "@/components/service-worker-registration";
@@ -41,6 +42,7 @@ export default function RootLayout({
     <html lang="en">
       <body className="app-body min-h-dvh antialiased">
         <OfflineBanner />
+        <ActiveScopeBar />
         {/* Leaves room for the fixed bottom nav (see .app-content in globals.css). */}
         <div className="app-content">{children}</div>
         <BottomNav />

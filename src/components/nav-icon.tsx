@@ -7,6 +7,7 @@ const PATHS: Record<NavIconName, string> = {
   stable: "m14 10 6-7 1 4-7 7M10 10 4 3 3 7l7 7m3 1 4-4m-2 2 5 7m-2 1 3-3M7 11l4 4m-2-2-5 7m-2-2 3 3",
   chat:"M20 4H4a1 1 0 0 0-1 1v16l5-4h12a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1ZM7 9h10M7 13h6",
   scan: "M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5M8 7h8v10H8V7Zm-3 5h14",
+  profiles: "M5 3h14v14l-7 4-7-4V3Zm10 5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm-7 8v-1a4 4 0 0 1 8 0v1",
 };
 
 /** Decorative nav glyph; the surrounding link carries the accessible name. */

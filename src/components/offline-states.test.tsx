@@ -222,7 +222,7 @@ describe("offline", () => {
   it("disables sheet scanning but keeps manual entry available", async () => {
     render(<ScanScreen repo={repo} fetchImpl={fetchMock} />);
 
-    const picker = screen.getByLabelText("Character sheet photo");
+    const picker = await screen.findByLabelText("Character sheet photo");
     expect(picker).toBeDisabled();
     expect(picker).toHaveAccessibleDescription(/Reading a sheet needs a connection/);
 
@@ -231,9 +231,9 @@ describe("offline", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("re-enables the sheet picker when the connection returns", () => {
+  it("re-enables the sheet picker when the connection returns", async () => {
     render(<ScanScreen repo={repo} fetchImpl={fetchMock} />);
-    expect(screen.getByLabelText("Character sheet photo")).toBeDisabled();
+    expect(await screen.findByLabelText("Character sheet photo")).toBeDisabled();
 
     setOnline(true);
     expect(screen.getByLabelText("Character sheet photo")).toBeEnabled();

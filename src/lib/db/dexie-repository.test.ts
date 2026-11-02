@@ -462,6 +462,29 @@ describe("party profiles", () => {
     expect(await repo.partyProfiles.listByUser(user.id)).toEqual([partyA]);
   });
 
+  it("keeps one scope per live party and drops deleted parties' scopes", async () => {
+    const b = await repo.partyProfiles.create(user.id, "Table B");
+    const c = await repo.partyProfiles.create(user.id, "Table C");
+    const scopeB = repo.forParty(b.id);
+    const scopeC = repo.forParty(c.id);
+    expect(repo.forParty(b.id)).toBe(scopeB);
+    expect(repo.forParty(partyA.id)).toBe(party);
+
+    await repo.partyProfiles.delete(b.id);
+    expect(repo.forParty(b.id)).not.toBe(scopeB);
+    expect(repo.forParty(c.id)).toBe(scopeC);
+    expect(repo.forParty(partyA.id)).toBe(party);
+    // A stale scope held across the delete still can't write into a dead party.
+    await expect(scopeB.characters.create(character())).rejects.toBeInstanceOf(
+      RecordNotFoundError,
+    );
+
+    const other = await repo.users.create("Ada");
+    const theirs = repo.forParty((await repo.partyProfiles.create(other.id, "Theirs")).id);
+    await repo.users.delete(other.id);
+    expect(repo.forParty(theirs.partyProfileId)).not.toBe(theirs);
+  });
+
   it("cascades a party delete to its own data only", async () => {
     const partyB = repo.forParty(
       (await repo.partyProfiles.create(user.id, "Table B")).id,

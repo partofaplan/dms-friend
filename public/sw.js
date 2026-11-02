@@ -21,9 +21,9 @@ const SHELL_URLS = [
  * open any of them (keep in sync with APP_ROUTES in src/components/nav-items.ts).
  *
  * Required routes are the offline core: the home shell (the fallback for every
- * other navigation) plus the roster and the monster stable (local data, fully
- * usable offline). If one of them, or any asset it references, can't be
- * cached, install fails.
+ * other navigation) plus the roster, the monster stable and the profile picker
+ * (local data, fully usable offline). If one of them, or any asset it
+ * references, can't be cached, install fails.
  *
  * Best-effort routes only matter online anyway (monsters/chat/scan show an
  * offline state), so one failing must not block an otherwise good update. Each
@@ -31,7 +31,7 @@ const SHELL_URLS = [
  * cached page never references a missing chunk. A skipped route falls back to
  * the home shell offline, as before.
  */
-const REQUIRED_ROUTES = ["/", "/roster", "/stable"];
+const REQUIRED_ROUTES = ["/", "/roster", "/stable", "/profiles"];
 const BEST_EFFORT_ROUTES = ["/scan", "/monsters", "/chat"];
 
 // Hashed build assets referenced by a page's HTML (scripts, styles, fonts).

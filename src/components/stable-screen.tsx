@@ -11,14 +11,43 @@ import {
   type Combatant,
   type CombatantUpdate,
   type Condition,
-  type Repository,
+  type AppRepository,
+  type PartyScopedRepository,
 } from "@/lib/db";
+import { useActiveProfile } from "@/lib/profiles/active-profile";
 import { useWriteQueue } from "@/lib/use-write-queue";
 
 export type StableScreenProps = {
   /** Injectable for tests; defaults to the app-wide IndexedDB repository. */
-  repo?: Repository;
+  repo?: AppRepository;
 };
+
+/**
+ * The active party's monster stable. Switching parties remounts it, so no
+ * pending delete or edit carries over between parties.
+ */
+export function StableScreen({ repo = defaultRepository }: StableScreenProps) {
+  const active = useActiveProfile(repo);
+  if (!active.scope) {
+    return (
+      <section className="stable" aria-labelledby="stable-title">
+        <div className="stable__header">
+          <h2 id="stable-title">Monsters in combat</h2>
+        </div>
+        {active.error ? (
+          <p className="stable__error" role="alert">
+            {active.error}
+          </p>
+        ) : (
+          <p className="stable__loading" role="status">
+            Loading the stable…
+          </p>
+        )}
+      </section>
+    );
+  }
+  return <PartyStable key={active.scope.partyProfileId} scope={active.scope} />;
+}
 
 /** Computes a change from the stored record; null means nothing to write. */
 type Change = (latest: Combatant) => CombatantUpdate | null;
@@ -32,7 +61,7 @@ type Change = (latest: Combatant) => CombatantUpdate | null;
  * Updates swap in the returned record; a delete (or a vanished record)
  * re-reads the whole stable.
  */
-export function StableScreen({ repo = defaultRepository }: StableScreenProps) {
+function PartyStable({ scope: repo }: { scope: PartyScopedRepository }) {
   const [combatants, setCombatants] = useState<Combatant[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);

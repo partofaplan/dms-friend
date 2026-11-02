@@ -159,7 +159,10 @@ export interface Repository {
 export interface AppRepository extends Repository {
   users: UserProfileRepository;
   partyProfiles: PartyProfileRepository;
-  /** The characters, monster stable and chat history of one party profile. */
+  /**
+   * The characters, monster stable and chat history of one party profile.
+   * Returns the same object for the same id (safe as a React dependency).
+   */
   forParty(partyProfileId: string): PartyScopedRepository;
   /**
    * The oldest user profile and its oldest party profile, creating
