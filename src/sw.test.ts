@@ -2,6 +2,8 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+import { APP_ROUTES } from "@/components/nav-items";
+
 /*
  * Runs the deployed public/sw.js against in-memory fakes of the service worker
  * globals (self, caches, fetch), so the tests exercise the exact shipped script.
@@ -110,11 +112,19 @@ function setup(routes: Record<string, () => Response | Promise<Response>> = {}) 
   const table = { ...defaults, ...routes };
   let online = true;
 
-  const fetch = vi.fn(async (request: RequestLike) => {
+  const fetch = vi.fn(async (request: RequestLike, init?: { signal?: AbortSignal }) => {
     if (!online) throw new TypeError("Failed to fetch");
     const url = new URL(keyOf(request));
     const route = url.origin === ORIGIN ? table[url.pathname] : undefined;
-    return route ? route() : new Response("not found", { status: 404 });
+    if (!route) return new Response("not found", { status: 404 });
+    // Like the real fetch, an aborted signal rejects even a request that never settles.
+    const signal = init?.signal;
+    if (!signal) return route();
+    signal.throwIfAborted();
+    return new Promise<Response>((resolve, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      Promise.resolve().then(route).then(resolve, reject);
+    });
   });
 
   const caches = new FakeCacheStorage(fetch);
@@ -186,7 +196,21 @@ function setup(routes: Record<string, () => Response | Promise<Response>> = {}) 
   };
 }
 
+/** Reads a `const NAME = ["...", ...];` string-array literal out of the worker source. */
+function swRouteList(name: string): string[] {
+  const match = SW_SOURCE.match(new RegExp(`const ${name} = (\\[[^\\]]*\\]);`));
+  if (!match) throw new Error(`${name} not found in public/sw.js`);
+  return JSON.parse(match[1].replace(/,\s*\]$/, "]"));
+}
+
 describe("service worker", () => {
+  it("precaches exactly the app's top-level routes (APP_ROUTES)", () => {
+    const precached = [...swRouteList("REQUIRED_ROUTES"), ...swRouteList("BEST_EFFORT_ROUTES")];
+    // No route listed twice, and none missing or extra versus the nav.
+    expect(new Set(precached).size).toBe(precached.length);
+    expect([...precached].sort()).toEqual([...APP_ROUTES].sort());
+  });
+
   describe("install", () => {
     it("precaches the shell and the static assets it references", async () => {
       const sw = setup();
@@ -252,6 +276,37 @@ describe("service worker", () => {
       // Offline, a skipped route still boots from the home shell.
       sw.setOnline(false);
       expect(await (await sw.navigate("/chat"))!.text()).toContain("shell v1");
+    });
+
+    it("skips a best-effort route that stalls, so install still completes", async () => {
+      vi.useFakeTimers();
+      try {
+        const never = () => new Promise<Response>(() => {});
+        // One route's page never responds; another's page chunk never does.
+        const sw = setup({ "/chat": never, [pageChunk("/monsters")]: never });
+
+        let installed = false;
+        const install = sw.lifecycle("install").then(() => {
+          installed = true;
+        });
+        await vi.advanceTimersByTimeAsync(9_999);
+        expect(installed).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(1);
+        await install;
+        expect(sw.self.skipWaiting).toHaveBeenCalled();
+
+        const shell = sw.caches.stores.get("dm-friend-shell-v2")!;
+        const has = (path: string) => shell.entries.has(new URL(path, ORIGIN).href);
+        expect(has("/")).toBe(true);
+        expect(has("/roster")).toBe(true);
+        expect(has("/scan")).toBe(true);
+        expect(has("/chat")).toBe(false);
+        // Never stored without its chunk.
+        expect(has("/monsters")).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("rejects when a required static asset fails to cache", async () => {

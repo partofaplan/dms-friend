@@ -60,7 +60,9 @@ function searchStatusText(search: SearchState): string {
  * new search aborts the previous request. Selecting a result fetches its full
  * stat block, aborting any in-flight detail request. Offline, neither request
  * is sent: the search/selection is parked and replayed when the browser comes
- * back online, while already-loaded results and stat blocks stay readable.
+ * back online, while already-loaded results and stat blocks stay readable. A
+ * request that fails because the connection dropped mid-flight is parked the
+ * same way; only failures while online surface as errors.
  */
 export function MonsterSearch({ fetchImpl, debounceMs = SEARCH_DEBOUNCE_MS }: MonsterSearchProps) {
   const inputId = useId();
@@ -101,11 +103,11 @@ export function MonsterSearch({ fetchImpl, debounceMs = SEARCH_DEBOUNCE_MS }: Mo
     try {
       const result = await fetchMonsterSearch(term, { signal: controller.signal, fetchImpl });
       if (controller.signal.aborted) return;
-      setSearch(
-        result.ok
-          ? { status: "done", query: term, results: result.data }
-          : { status: "error", message: result.message },
-      );
+      if (result.ok) setSearch({ status: "done", query: term, results: result.data });
+      // Connection dropped mid-request: park it like an offline search so the
+      // reconnect handler replays it, rather than ending in a terminal error.
+      else if (!isOnline()) setSearch({ status: "offline", query: term });
+      else setSearch({ status: "error", message: result.message });
     } catch {
       // Aborted by a newer search or unmount.
     }
@@ -142,12 +144,15 @@ export function MonsterSearch({ fetchImpl, debounceMs = SEARCH_DEBOUNCE_MS }: Mo
       const result = await fetchMonsterDetail(summary.slug, { signal: controller.signal, fetchImpl });
       if (controller.signal.aborted) return;
       // Feeds the chat assistant's context (see /chat).
-      if (result.ok) setLastViewedMonster(result.data);
-      setDetail(
-        result.ok
-          ? { status: "loaded", monster: result.data }
-          : { status: "error", slug: summary.slug, name: summary.name, message: result.message },
-      );
+      if (result.ok) {
+        setLastViewedMonster(result.data);
+        setDetail({ status: "loaded", monster: result.data });
+      } else if (!isOnline()) {
+        // Dropped mid-request: park the selection for the reconnect handler.
+        setDetail({ status: "offline", slug: summary.slug, name: summary.name });
+      } else {
+        setDetail({ status: "error", slug: summary.slug, name: summary.name, message: result.message });
+      }
     } catch {
       // Aborted by a newer selection or unmount.
     }
@@ -155,6 +160,8 @@ export function MonsterSearch({ fetchImpl, debounceMs = SEARCH_DEBOUNCE_MS }: Mo
 
   useOnReconnect(() => {
     // Replay against the current input, which may have changed while offline.
+    // A replay moves its state to "loading" (aborting any prior request), so a
+    // repeated online event can't stack a second fetch.
     const term = query.trim();
     if (search.status === "offline" && term) void runSearch(term);
     if (detail.status === "offline") void selectMonster(detail);

@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import type { DexieRepository } from "@/lib/db";
-import { normalizeMonsterSummary } from "@/lib/monsters/types";
+import { normalizeMonster, normalizeMonsterSummary } from "@/lib/monsters/types";
 import { goblinRaw } from "@/test-utils/open5e-fixtures";
 import { characterInput, createTestRepository } from "@/test-utils/repository";
 
@@ -70,6 +70,133 @@ describe("offline", () => {
     expect(screen.queryByText(/Monster lookup needs a connection/)).not.toBeInTheDocument();
     expect(await screen.findByRole("button", { name: /Goblin/ })).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  describe("monster lookup failing mid-request", () => {
+    const goblinSummary = normalizeMonsterSummary(goblinRaw)!;
+    const goblin = normalizeMonster(goblinRaw)!;
+
+    function json(body: unknown, status = 200) {
+      return new Response(JSON.stringify(body), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    function isDetailRequest(input: Parameters<typeof fetch>[0]) {
+      return new URL(String(input), "http://localhost").searchParams.has("slug");
+    }
+
+    function callsWhere(predicate: (input: Parameters<typeof fetch>[0]) => boolean) {
+      return fetchMock.mock.calls.filter(([input]) => predicate(input)).length;
+    }
+
+    /** A fetch that stays pending until the test rejects it. */
+    function stalledFetch() {
+      let reject!: (reason: unknown) => void;
+      const promise = new Promise<Response>((_, r) => (reject = r));
+      return { promise, reject };
+    }
+
+    async function submitSearch(term: string) {
+      fireEvent.change(screen.getByRole("searchbox", { name: "Search monsters" }), {
+        target: { value: term },
+      });
+      await act(async () => {
+        fireEvent.submit(screen.getByRole("search"));
+      });
+    }
+
+    it("parks a search that fails after the connection drops, then retries it once on reconnect", async () => {
+      setOnline(true);
+      const stalled = stalledFetch();
+      fetchMock
+        .mockReturnValueOnce(stalled.promise)
+        .mockResolvedValue(json({ results: [goblinSummary] }));
+      render(<MonsterSearch fetchImpl={fetchMock} />);
+
+      await submitSearch("goblin");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      setOnline(false);
+      await act(async () => stalled.reject(new TypeError("Failed to fetch")));
+
+      expect(screen.getAllByRole("status")[0]).toHaveTextContent(
+        "Waiting for a connection to search for “goblin”.",
+      );
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+      setOnline(true);
+      expect(await screen.findByRole("button", { name: /Goblin/ })).toBeInTheDocument();
+      expect(screen.getAllByRole("status")[0]).toHaveTextContent("1 monster found.");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      // Nothing is parked any more, so a later online event doesn't refetch.
+      setOnline(true);
+      await act(async () => {});
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("parks a stat block that fails after the connection drops, then retries it once on reconnect", async () => {
+      setOnline(true);
+      const stalled = stalledFetch();
+      let detailCalls = 0;
+      fetchMock.mockImplementation(async (input) => {
+        if (!isDetailRequest(input)) return json({ results: [goblinSummary] });
+        detailCalls += 1;
+        return detailCalls === 1 ? stalled.promise : json({ monster: goblin });
+      });
+      render(<MonsterSearch fetchImpl={fetchMock} />);
+
+      await submitSearch("goblin");
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /Goblin/ }));
+      });
+      expect(callsWhere(isDetailRequest)).toBe(1);
+
+      setOnline(false);
+      await act(async () => stalled.reject(new TypeError("Failed to fetch")));
+
+      expect(screen.getAllByRole("status")[1]).toHaveTextContent(
+        "Waiting for a connection to load Goblin.",
+      );
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(screen.queryByRole("article", { name: "Goblin" })).not.toBeInTheDocument();
+
+      setOnline(true);
+      expect(await screen.findByRole("article", { name: "Goblin" })).toBeInTheDocument();
+      expect(screen.getAllByRole("status")[1]).toBeEmptyDOMElement();
+      expect(callsWhere(isDetailRequest)).toBe(2);
+      // The finished search isn't replayed either.
+      expect(callsWhere((input) => !isDetailRequest(input))).toBe(1);
+
+      setOnline(true);
+      await act(async () => {});
+      expect(callsWhere(isDetailRequest)).toBe(2);
+    });
+
+    it("still shows an error (with retry) when a request fails while online", async () => {
+      setOnline(true);
+      fetchMock.mockImplementation(async (input) => {
+        if (!isDetailRequest(input)) return json({ results: [goblinSummary] });
+        throw new TypeError("Failed to fetch");
+      });
+      render(<MonsterSearch fetchImpl={fetchMock} />);
+
+      await submitSearch("goblin");
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /Goblin/ }));
+      });
+
+      expect(screen.getByRole("alert")).toHaveTextContent(/Couldn't reach the server/);
+      expect(screen.getByRole("button", { name: "Try Goblin again" })).toBeInTheDocument();
+      expect(screen.getAllByRole("status")[1]).toBeEmptyDOMElement();
+
+      // An error isn't parked, so an online event doesn't silently retry it.
+      setOnline(true);
+      await act(async () => {});
+      expect(callsWhere(isDetailRequest)).toBe(1);
+    });
   });
 
   it("disables sending a chat message with an explanation, and re-enables it online", async () => {

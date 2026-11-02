@@ -37,9 +37,16 @@ const BEST_EFFORT_ROUTES = ["/scan", "/monsters", "/chat"];
 // Backslash is excluded because the inline RSC payload uses escaped quotes (\").
 const STATIC_ASSET_PATTERN = /\/_next\/static\/[^"'\s)\\]+/g;
 
-/** Caches a route's HTML plus every static asset it references; rejects on any failure. */
-async function precacheRoute(cache, path) {
-  const response = await fetch(path, { cache: "reload" });
+// A best-effort route that hasn't finished by then is skipped, so a stalled
+// request can't hold up install (and activation) once the required routes are in.
+const BEST_EFFORT_TIMEOUT_MS = 10_000;
+
+/**
+ * Caches a route's HTML plus every static asset it references; rejects on any
+ * failure, or once `signal` aborts.
+ */
+async function precacheRoute(cache, path, signal) {
+  const response = await fetch(path, { cache: "reload", signal });
   if (!response.ok) throw new Error(`Precache failed for ${path}: ${response.status}`);
   const html = await response.clone().text();
   const assets = [...new Set(html.match(STATIC_ASSET_PATTERN) ?? [])];
@@ -48,9 +55,32 @@ async function precacheRoute(cache, path) {
   for (const asset of assets) {
     if (!(await cache.match(asset))) missing.push(asset);
   }
-  await cache.addAll(missing);
+  // Fetched (rather than cache.addAll'd) so the abort signal reaches every request.
+  const fetched = await Promise.all(
+    missing.map(async (asset) => {
+      const assetResponse = await fetch(asset, { signal });
+      if (!assetResponse.ok) throw new Error(`Precache failed for ${asset}: ${assetResponse.status}`);
+      return assetResponse;
+    }),
+  );
+  await Promise.all(fetched.map((assetResponse, i) => cache.put(missing[i], assetResponse)));
+  signal?.throwIfAborted();
   // Written last so the page is only ever cached alongside its assets.
   await cache.put(path, response);
+}
+
+/** precacheRoute, abandoned (and rejected) after BEST_EFFORT_TIMEOUT_MS. */
+async function precacheRouteWithTimeout(cache, path) {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new Error(`Precache timed out for ${path}`)),
+    BEST_EFFORT_TIMEOUT_MS,
+  );
+  try {
+    await precacheRoute(cache, path, controller.signal);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function precacheShell() {
@@ -63,8 +93,8 @@ async function precacheShell() {
   for (const path of REQUIRED_ROUTES) await precacheRoute(cache, path);
 
   // Best-effort routes run after the required ones so they reuse the shared
-  // chunks already cached; failures are swallowed per route.
-  await Promise.allSettled(BEST_EFFORT_ROUTES.map((path) => precacheRoute(cache, path)));
+  // chunks already cached; failures and timeouts are swallowed per route.
+  await Promise.allSettled(BEST_EFFORT_ROUTES.map((path) => precacheRouteWithTimeout(cache, path)));
 }
 
 self.addEventListener("install", (event) => {
