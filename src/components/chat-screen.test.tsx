@@ -44,6 +44,16 @@ async function seedParty() {
   );
 }
 
+/** "Goblin" at full HP and a hurt, poisoned "Goblin 2". */
+async function seedStable() {
+  await repo.combatants.addFromMonster(goblin);
+  const second = await repo.combatants.addFromMonster(goblin);
+  await repo.combatants.update(second.id, {
+    hitPoints: { max: 7, current: 3 },
+    conditions: ["poisoned"],
+  });
+}
+
 async function renderChat() {
   render(<ChatScreen repo={repo} fetchImpl={fetchMock} />);
   await screen.findByText(/^Using:/);
@@ -68,18 +78,210 @@ describe("ChatScreen", () => {
     await seedParty();
     setLastViewedMonster(goblin);
     await renderChat();
-    expect(screen.getByText("Using: party (2) · Goblin")).toBeInTheDocument();
+    expect(screen.getByText("Using: party (2) · no stable · Goblin")).toBeInTheDocument();
   });
 
-  it("notes when there is no party or monster", async () => {
+  it("notes when there is no party, stable, or monster", async () => {
     await renderChat();
-    expect(screen.getByText("Using: no party · no monster")).toBeInTheDocument();
+    expect(screen.getByText("Using: no party · no stable · no monster")).toBeInTheDocument();
+  });
+
+  it("notes the monster stable it grounds answers in", async () => {
+    await seedParty();
+    await seedStable();
+    await renderChat();
+    expect(screen.getByText("Using: party (2) · stable (2) · no monster")).toBeInTheDocument();
   });
 
   it("follows a monster viewed while the chat is open", async () => {
     await renderChat();
     act(() => setLastViewedMonster(goblin));
-    expect(screen.getByText("Using: no party · Goblin")).toBeInTheDocument();
+    expect(screen.getByText("Using: no party · no stable · Goblin")).toBeInTheDocument();
+  });
+
+  describe("@mentions", () => {
+    async function seedThorin() {
+      await repo.characters.create(
+        characterInput({
+          name: "Thorin",
+          race: "Dwarf",
+          className: "Fighter",
+          level: 5,
+          armorClass: 18,
+          hitPoints: { max: 44, current: 9 },
+          conditions: ["prone"],
+        }),
+      );
+    }
+
+    /** Type `value` with the caret at its end. */
+    function type(value: string) {
+      fireEvent.change(input(), { target: { value } });
+    }
+
+    /** The listbox the combobox controls (hidden, so unnamed, while empty). */
+    const listbox = () => document.getElementById(input().getAttribute("aria-controls")!)!;
+    const options = () => within(listbox()).queryAllByRole("option");
+
+    it("suggests matching party members for @, and tags the pick on Enter", async () => {
+      await seedParty();
+      await seedThorin();
+      await seedStable();
+      fetchMock.mockResolvedValue(controllableChatStream().response);
+      await renderChat();
+
+      type("how hurt is @tho");
+      expect(options()).toHaveLength(1);
+      expect(options()[0]).toHaveTextContent("@Thorin PC · Fighter 5 · HP 9/44");
+
+      // Enter tags instead of sending while the list is open.
+      fireEvent.keyDown(input(), { key: "Enter" });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(input()).toHaveValue("how hurt is @Thorin ");
+      expect(options()).toHaveLength(0);
+      expect(screen.getByRole("list", { name: "Tagged" })).toHaveTextContent("@Thorin");
+
+      type("how hurt is @Thorin?");
+      // With the list closed, Enter sends.
+      fireEvent.keyDown(input(), { key: "Enter" });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      const { messages } = sentBody();
+      expect(messages[0].content).toContain(
+        "Referenced now (who the DM's latest message tags):\n- @Thorin (party): Thorin — Dwarf Fighter 5; AC 18; HP 9/44; conditions: prone",
+      );
+      expect(messages[0].content).toContain("Monsters in combat (2):");
+      // The question stays readable, as typed.
+      expect(messages.at(-1)).toEqual({ role: "user", content: "how hurt is @Thorin?" });
+      expect(within(log()).getByText("how hurt is @Thorin?")).toBeInTheDocument();
+      expect(buildSystemContext).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          references: [expect.objectContaining({ kind: "character", name: "Thorin" })],
+        }),
+      );
+      // The draft's tags clear with it.
+      expect(screen.queryByRole("list", { name: "Tagged" })).not.toBeInTheDocument();
+    });
+
+    it("tags a combatant by click and pins its live HP and conditions", async () => {
+      await seedStable();
+      fetchMock.mockResolvedValue(controllableChatStream().response);
+      await renderChat();
+
+      type("is @gob");
+      expect(options().map((o) => o.textContent)).toEqual([
+        "@Goblin CR 1/4 · HP 7/7",
+        "@Goblin 2 CR 1/4 · HP 3/7",
+      ]);
+      fireEvent.click(options()[1]);
+      expect(input()).toHaveValue("is @Goblin 2 ");
+
+      type("is @Goblin 2 poisoned?");
+      fireEvent.click(sendButton());
+      const system = sentBody().messages[0].content;
+      expect(system).toContain(
+        "Referenced now (who the DM's latest message tags):\n- @Goblin 2 (combat): Goblin 2 (Goblin, CR 1/4) — AC 15; HP 3/7; conditions: poisoned",
+      );
+      expect(system).not.toMatch(/^- @Goblin \(combat\)/m);
+    });
+
+    it("disambiguates same-named combatants by the pick", async () => {
+      await repo.combatants.addFromMonster(goblin);
+      const second = await repo.combatants.addFromMonster(goblin);
+      await repo.combatants.update(second.id, { label: "Goblin", hitPoints: { max: 7, current: 2 } });
+      fetchMock.mockResolvedValue(controllableChatStream().response);
+      await renderChat();
+
+      type("@gob");
+      expect(options().map((o) => o.textContent)).toEqual([
+        "@Goblin CR 1/4 · HP 7/7",
+        "@Goblin (2) CR 1/4 · HP 2/7",
+      ]);
+      fireEvent.keyDown(input(), { key: "ArrowDown" });
+      fireEvent.keyDown(input(), { key: "Tab" });
+      expect(input()).toHaveValue("@Goblin (2) ");
+
+      fireEvent.click(sendButton());
+      expect(buildSystemContext).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          references: [expect.objectContaining({ id: second.id, summary: expect.stringContaining("HP 2/7") })],
+        }),
+      );
+    });
+
+    it("pins nothing that isn't @mentioned, even a character named like a common word", async () => {
+      await repo.characters.create(characterInput({ name: "Bard", className: "Bard" }));
+      await seedStable();
+      fetchMock.mockResolvedValue(controllableChatStream().response);
+      await renderChat();
+
+      ask("Can a bard heal the goblin? Bard, Will, goblin 2.");
+      expect(sentBody().messages[0].content).not.toContain("Referenced now (");
+      expect(buildSystemContext).toHaveBeenLastCalledWith(expect.objectContaining({ references: [] }));
+    });
+
+    it("untags from the chip, leaving the name as plain text", async () => {
+      await seedThorin();
+      await renderChat();
+
+      type("@tho");
+      fireEvent.keyDown(input(), { key: "Enter" });
+      fireEvent.click(screen.getByRole("button", { name: "Untag Thorin" }));
+      expect(input()).toHaveValue("Thorin ");
+      expect(screen.queryByRole("list", { name: "Tagged" })).not.toBeInTheDocument();
+    });
+
+    it("wires the combobox to the listbox and its highlighted option", async () => {
+      await seedParty();
+      await seedThorin();
+      await renderChat();
+      const field = screen.getByRole("combobox", { name: "Ask the assistant" });
+      expect(field).toHaveAttribute("aria-autocomplete", "list");
+      expect(listbox()).toHaveAttribute("role", "listbox");
+      expect(field).toHaveAttribute("aria-expanded", "false");
+      expect(field).not.toHaveAttribute("aria-activedescendant");
+
+      type("@");
+      expect(field).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByRole("listbox", { name: "Tag suggestions" })).toBeVisible();
+      const [first, second] = options();
+      expect(options()).toHaveLength(3);
+      for (const option of options()) expect(option.id).toBeTruthy();
+      expect(field).toHaveAttribute("aria-activedescendant", first.id);
+      expect(first).toHaveAttribute("aria-selected", "true");
+      expect(second).toHaveAttribute("aria-selected", "false");
+
+      fireEvent.keyDown(field, { key: "ArrowDown" });
+      expect(field).toHaveAttribute("aria-activedescendant", second.id);
+      expect(second).toHaveAttribute("aria-selected", "true");
+      fireEvent.keyDown(field, { key: "ArrowUp" });
+      fireEvent.keyDown(field, { key: "ArrowUp" });
+      expect(field).toHaveAttribute("aria-activedescendant", options()[2].id);
+
+      // Escape closes without sending or changing the text.
+      fireEvent.keyDown(field, { key: "Escape" });
+      expect(field).toHaveAttribute("aria-expanded", "false");
+      expect(field).not.toHaveAttribute("aria-activedescendant");
+      expect(listbox()).not.toBeVisible();
+      expect(field).toHaveValue("@");
+
+      // A new "@" opens it again; a query with no match keeps it closed.
+      type("@ @th");
+      expect(field).toHaveAttribute("aria-expanded", "true");
+      type("@ @zzz");
+      expect(field).toHaveAttribute("aria-expanded", "false");
+    });
+  });
+
+  it("still answers, without the stable, when it can't be loaded", async () => {
+    vi.spyOn(repo.combatants, "getAll").mockRejectedValue(new Error("blocked"));
+    fetchMock.mockResolvedValue(controllableChatStream().response);
+    await renderChat();
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn't load the monster stable");
+    expect(screen.getByText("Using: no party · no stable · no monster")).toBeInTheDocument();
+
+    ask("Who acts first?");
+    expect(sentBody().messages[0].content).toContain("Monsters in combat: none.");
   });
 
   it("streams the assistant reply delta by delta, grounded in the party and monster", async () => {
@@ -215,7 +417,7 @@ describe("ChatScreen", () => {
     const stream = controllableChatStream();
     fetchMock.mockResolvedValue(stream.response);
     render(<FreshChatScreen repo={repo} fetchImpl={fetchMock} />);
-    expect(await screen.findByText("Using: no party · no monster")).toBeInTheDocument();
+    expect(await screen.findByText("Using: no party · no stable · no monster")).toBeInTheDocument();
 
     ask("Who acts first?");
     expect(fetchMock).toHaveBeenCalledTimes(1);
